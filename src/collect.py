@@ -157,7 +157,7 @@ def collect_all():
         encoding="utf-8"
     )
 
-    print(f"\n✓ 완료: 총 {len(all_chunks)}개 청크 → {all_path}")
+    print(f"\n[완료] 총 {len(all_chunks)}개 청크 -> {all_path}")
     return all_chunks
 
 
