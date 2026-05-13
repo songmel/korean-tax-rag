@@ -12,7 +12,6 @@ The system must answer tax-law questions by retrieving and reasoning over Korean
 
 Primary goals:
 - Hackathon phase: KAIST SW Education Center Track C (required: LangChain, CrewAI, MCP)
-- Long-term direction: LinkTax SaaS tax advisory infrastructure
 
 Core stack:
 - Agent orchestration: CrewAI
@@ -348,6 +347,13 @@ Retrieval must include:
 - English for function names, variable names, code comments
 - All prompts versioned in `src/agents/prompts.py` (never inline)
 - No business logic in `ui.py`
+
+## Git Commit Convention
+
+- **모든 커밋 메시지는 한국어로 작성한다**
+- 형식: `타입: 변경 내용 요약`
+- 타입 예시: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+- 예시: `docs: README 제목 및 LinkTax 언급 수정`
 
 ---
 
