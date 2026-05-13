@@ -80,17 +80,16 @@ def parse_xml_to_chunks(xml_text: str, law_info: dict) -> list[dict]:
             continue
 
         # 전체 텍스트 조합 (RAG 검색용)
+        # 항내용/호내용에 이미 ①, 1. 등 번호가 포함되어 있으므로 prefix 재추가 금지
         full_text_parts = []
-        if 조문제목:
-            full_text_parts.append(f"제{조문번호}조({조문제목})")
         if 내용:
             full_text_parts.append(내용)
         for 항 in 항_list:
             if 항["항내용"]:
-                full_text_parts.append(f"  ① {항['항내용']}" if 항["항번호"] == "1" else f"  {항['항번호']} {항['항내용']}")
+                full_text_parts.append(f"  {항['항내용']}")
             for 호 in 항["호"]:
                 if 호["호내용"]:
-                    full_text_parts.append(f"    {호['호번호']}. {호['호내용']}")
+                    full_text_parts.append(f"    {호['호내용']}")
 
         chunk = {
             "id": f"{law_info['mst']}_{조문키}",
