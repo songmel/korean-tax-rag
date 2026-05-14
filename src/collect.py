@@ -160,5 +160,12 @@ def collect_all():
     return all_chunks
 
 
+# TODO: 국세청 법령해석 수집 (v2)
+# law.go.kr DRF target=ntsCgmExpc 로 국세청 행정해석(예규·심사결정) 수집
+# 참고 URL: http://www.law.go.kr/DRF/lawSearch.do?target=ntsCgmExpc&OC=jctax&type=XML
+# 구현 시 collect_nts_interpretations() 함수로 분리하고 all_chunks에 병합할 것
+# 메타데이터에 "source": "nts.go.kr", "doc_type": "예규"|"심사결정" 추가 필요
+
+
 if __name__ == "__main__":
     collect_all()
