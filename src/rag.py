@@ -115,16 +115,14 @@ def retrieve_tax_law(
     query_vec = _embed_query(query)
 
     # 2. Pinecone 날짜 필터 구성
+    # effective_date/expiration_date는 YYYYMMDD 정수로 저장됨 ($lte/$gte는 숫자 전용)
     pinecone_filter = None
     if as_of_date:
-        # 시행일 <= as_of_date AND (만료일 없음(현행) OR 만료일 >= as_of_date)
+        as_of_int = int(as_of_date)
         pinecone_filter = {
             "$and": [
-                {"effective_date": {"$lte": as_of_date}},
-                {"$or": [
-                    {"expiration_date": {"$eq": ""}},
-                    {"expiration_date": {"$gte": as_of_date}},
-                ]},
+                {"effective_date": {"$lte": as_of_int}},
+                {"expiration_date": {"$gte": as_of_int}},
             ]
         }
 
@@ -140,6 +138,13 @@ def retrieve_tax_law(
         query_kwargs["filter"] = pinecone_filter
     result = index.query(**query_kwargs)
     matches = result.get("matches", [])
+
+    # 날짜 필터로 결과가 없으면 버전 이력 미수집 상태 — 필터 없이 재검색
+    if not matches and pinecone_filter:
+        fallback_kwargs = {k: v for k, v in query_kwargs.items() if k != "filter"}
+        result = index.query(**fallback_kwargs)
+        matches = result.get("matches", [])
+
     if not matches:
         return []
 
@@ -155,6 +160,13 @@ def retrieve_tax_law(
         reverse=True,
     )[:rerank_top_n]
 
+    def _date_str(val) -> str:
+        """Pinecone이 정수를 float으로 반환 (20260421.0) → YYYYMMDD 문자열로 복원"""
+        if val is None or val == "" :
+            return ""
+        v = int(float(val))
+        return "" if v == 0 or v == 99991231 else str(v)
+
     chunks = []
     for score, match in ranked:
         meta = match["metadata"]
@@ -164,8 +176,8 @@ def retrieve_tax_law(
                 law_name=meta.get("law_name", ""),
                 article_number=meta.get("article_number", ""),
                 article_title=meta.get("article_title", ""),
-                effective_date=meta.get("effective_date", ""),
-                expiration_date=meta.get("expiration_date", ""),
+                effective_date=_date_str(meta.get("effective_date")),
+                expiration_date=_date_str(meta.get("expiration_date")),
                 full_text=meta.get("full_text", ""),
                 score=float(score),
             )

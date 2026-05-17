@@ -116,8 +116,9 @@ def embed_and_upload(chunks_path: Optional[Path] = None) -> int:
                 "law_name": chunk.get("law_name", ""),
                 "article_number": chunk.get("article_number", ""),
                 "article_title": chunk.get("article_title", ""),
-                "effective_date": chunk.get("effective_date", ""),
-                "expiration_date": chunk.get("expiration_date", ""),  # 빈 문자열 = 현행
+                # Pinecone $lte/$gte는 숫자 타입 전용 — YYYYMMDD 정수로 저장
+                "effective_date": int(chunk["effective_date"]) if chunk.get("effective_date") else 0,
+                "expiration_date": int(chunk["expiration_date"]) if chunk.get("expiration_date") else 99991231,
                 "version_mst": chunk.get("version_mst", chunk.get("law_mst", "")),
                 "law_category": chunk.get("law_category", ""),
                 "source": "law.go.kr",

@@ -238,12 +238,13 @@ def collect_all():
 
         if not versions:
             # 이력 조회 실패 시 현행 버전 단독 수집
+            # effective_date=0, expiration_date=99991231 → Pinecone 날짜 필터에서 항상 통과
             print(f"  → 이력 없음, 현행 버전만 수집 (MST={law['mst']})")
             versions = [{
                 "mst": law["mst"],
-                "effective_date": "",
+                "effective_date": "0",
                 "promulgation_date": "",
-                "expiration_date": "",
+                "expiration_date": "99991231",
             }]
         else:
             # 현행 MST가 목록에 없으면 추가
