@@ -73,10 +73,13 @@ if submitted:
         st.warning("사실관계를 입력해주세요.")
         st.stop()
 
+    # 취득일을 기준일자로 자동 사용
+    as_of_date = acquisition_date.replace("-", "") if acquisition_date else None
+
     with st.spinner("법령 검색 및 판단 중..."):
         if mode == "RAG 단독 (빠름)":
             from src.rag import answer_with_citations
-            answer = answer_with_citations(question)
+            answer = answer_with_citations(question, as_of_date=as_of_date)
 
             st.success("판단 완료")
             st.subheader("요약 판단")

@@ -35,6 +35,7 @@ class LawChunk(BaseModel):
     article_number: str
     article_title: str
     effective_date: str
+    expiration_date: str = ""  # 빈 문자열 = 현행
     full_text: str
     score: float
 
@@ -103,19 +104,41 @@ def retrieve_tax_law(
     query: str,
     top_k: int = 20,
     rerank_top_n: int = 5,
+    as_of_date: Optional[str] = None,
 ) -> list[LawChunk]:
-    """법령 벡터 검색 + BGE reranking → 상위 rerank_top_n개 반환"""
+    """
+    법령 벡터 검색 + BGE reranking → 상위 rerank_top_n개 반환.
+    as_of_date: "YYYYMMDD" 형식. 지정 시 해당 시점에 유효한 조문만 검색.
+                None이면 현행 + 모든 버전 검색.
+    """
     # 1. 쿼리 임베딩
     query_vec = _embed_query(query)
 
-    # 2. Pinecone 벡터 검색
+    # 2. Pinecone 날짜 필터 구성
+    pinecone_filter = None
+    if as_of_date:
+        # 시행일 <= as_of_date AND (만료일 없음(현행) OR 만료일 >= as_of_date)
+        pinecone_filter = {
+            "$and": [
+                {"effective_date": {"$lte": as_of_date}},
+                {"$or": [
+                    {"expiration_date": {"$eq": ""}},
+                    {"expiration_date": {"$gte": as_of_date}},
+                ]},
+            ]
+        }
+
+    # 3. Pinecone 벡터 검색
     index = _get_pinecone_index()
-    result = index.query(
+    query_kwargs = dict(
         vector=query_vec,
         top_k=top_k,
         namespace=PINECONE_NAMESPACE,
         include_metadata=True,
     )
+    if pinecone_filter:
+        query_kwargs["filter"] = pinecone_filter
+    result = index.query(**query_kwargs)
     matches = result.get("matches", [])
     if not matches:
         return []
@@ -142,6 +165,7 @@ def retrieve_tax_law(
                 article_number=meta.get("article_number", ""),
                 article_title=meta.get("article_title", ""),
                 effective_date=meta.get("effective_date", ""),
+                expiration_date=meta.get("expiration_date", ""),
                 full_text=meta.get("full_text", ""),
                 score=float(score),
             )
@@ -149,11 +173,16 @@ def retrieve_tax_law(
     return chunks
 
 
-
-
-def answer_with_citations(question: str) -> TaxAnswer:
-    """검색 → reranking → LLM 추론 → TaxAnswer 반환"""
-    chunks = retrieve_tax_law(question)
+def answer_with_citations(
+    question: str,
+    as_of_date: Optional[str] = None,
+    facts: Optional[dict] = None,
+    enable_trace: bool = True,
+) -> TaxAnswer:
+    """검색 → reranking → LLM 추론 → TaxAnswer 반환. enable_trace=True 시 feedback.py에 추적 기록."""
+    import time as _time
+    t0 = _time.time()
+    chunks = retrieve_tax_law(question, as_of_date=as_of_date)
 
     if not chunks:
         return TaxAnswer(
@@ -220,7 +249,7 @@ def answer_with_citations(question: str) -> TaxAnswer:
             "warnings": ["JSON 파싱 실패 — 원문 반환"],
         }
 
-    return TaxAnswer(
+    tax_answer = TaxAnswer(
         answer=data.get("answer", ""),
         citations=data.get("citations", []),
         chunk_ids=data.get("chunk_ids", []),
@@ -228,6 +257,31 @@ def answer_with_citations(question: str) -> TaxAnswer:
         missing_facts=data.get("missing_facts", []),
         warnings=data.get("warnings", []),
     )
+
+    if enable_trace:
+        try:
+            from src.feedback import generate_trace_id, log_trace
+            latency_ms = int((_time.time() - t0) * 1000)
+            log_trace(
+                trace_id=generate_trace_id(),
+                question=question,
+                facts=facts or {},
+                retrieved_chunk_ids=[c.id for c in chunks],
+                rerank_scores=[c.score for c in chunks],
+                cited_chunk_ids=tax_answer.chunk_ids,
+                answer=tax_answer.answer,
+                confidence=tax_answer.confidence,
+                missing_facts=tax_answer.missing_facts,
+                warnings=tax_answer.warnings,
+                as_of_date=as_of_date,
+                prompt_version="v1",
+                model_version=CLAUDE_MODEL,
+                latency_ms=latency_ms,
+            )
+        except Exception:
+            pass  # 추적 실패가 답변 반환을 막으면 안 됨
+
+    return tax_answer
 
 
 # ── 테스트 ────────────────────────────────────────────────────

@@ -24,7 +24,12 @@ mcp = FastMCP(
 # ── Tool 1: 법령 벡터 검색 ────────────────────────────────────────────────────
 
 @mcp.tool()
-def search_tax_law(query: str, top_k: int = 20, rerank_top_n: int = 5) -> str:
+def search_tax_law(
+    query: str,
+    top_k: int = 20,
+    rerank_top_n: int = 5,
+    as_of_date: str = "",
+) -> str:
     """
     한국 양도소득세 관련 법령 조문을 벡터 검색 + BGE reranking으로 검색합니다.
 
@@ -32,8 +37,12 @@ def search_tax_law(query: str, top_k: int = 20, rerank_top_n: int = 5) -> str:
         query: 검색할 법령 키워드 또는 질문
         top_k: 벡터 검색 후보 수 (기본 20)
         rerank_top_n: BGE reranking 후 반환할 조문 수 (기본 5)
+        as_of_date: 기준일자 YYYYMMDD (예: "20220101"). 비워두면 전체 버전 검색.
     """
-    chunks = retrieve_tax_law(query, top_k=top_k, rerank_top_n=rerank_top_n)
+    chunks = retrieve_tax_law(
+        query, top_k=top_k, rerank_top_n=rerank_top_n,
+        as_of_date=as_of_date or None,
+    )
     if not chunks:
         return "관련 법령 조문을 찾을 수 없습니다."
 
@@ -82,7 +91,7 @@ def retrieve_article(law_name: str, article_number: str) -> str:
 # ── Tool 3: 비과세 요건 분석 (RAG + LLM) ─────────────────────────────────────
 
 @mcp.tool()
-def analyze_exemption(question: str) -> str:
+def analyze_exemption(question: str, as_of_date: str = "") -> str:
     """
     양도소득세 비과세·감면·중과 여부를 RAG 검색 후 Claude로 분석합니다.
     검색된 법령 조문에만 근거하며, 불확실한 사실관계는 추가 확인 항목으로 표시합니다.
@@ -90,8 +99,9 @@ def analyze_exemption(question: str) -> str:
     Args:
         question: 사실관계가 포함된 질문
                   (예: "2019년 취득, 2024년 양도, 보유 5년, 거주 3년, 1세대 1주택")
+        as_of_date: 기준일자 YYYYMMDD (예: "20220101"). 취득일 또는 양도일 기준.
     """
-    answer: TaxAnswer = answer_with_citations(question)
+    answer: TaxAnswer = answer_with_citations(question, as_of_date=as_of_date or None)
 
     result = {
         "answer": answer.answer,

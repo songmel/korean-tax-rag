@@ -117,10 +117,12 @@ def embed_and_upload(chunks_path: Optional[Path] = None) -> int:
                 "article_number": chunk.get("article_number", ""),
                 "article_title": chunk.get("article_title", ""),
                 "effective_date": chunk.get("effective_date", ""),
+                "expiration_date": chunk.get("expiration_date", ""),  # 빈 문자열 = 현행
+                "version_mst": chunk.get("version_mst", chunk.get("law_mst", "")),
                 "law_category": chunk.get("law_category", ""),
                 "source": "law.go.kr",
-                # full_text는 reranker가 사용 — Pinecone 메타데이터 한도 고려해 400자로 저장
-                "full_text": chunk.get("full_text", "")[:400],
+                # Pinecone 벡터당 메타데이터 한도 40KB — 4000자까지 저장 (reranker + LLM 모두 이 필드 사용)
+                "full_text": chunk.get("full_text", "")[:4000],
             }
             upsert_payload.append(
                 {"id": chunk["id"], "values": vec, "metadata": metadata}
