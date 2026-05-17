@@ -8,17 +8,37 @@ www.law.go.kr DRF API → data/raw/ (XML) + data/processed/ (JSON chunks)
 - chunk ID = {version_mst}_{조문키} → 버전별 고유성 보장
 """
 import json
+import ssl
 import time
-import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import requests
+import urllib3
+from requests.adapters import HTTPAdapter
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 OC = "jctax"
 BASE_URL = "https://www.law.go.kr/DRF"
 RAW_DIR = Path("data/raw")
 PROCESSED_DIR = Path("data/processed")
 YEARS_BACK = 10  # 최근 N년치 개정 버전 수집
+
+
+def _make_session() -> requests.Session:
+    """law.go.kr SSL 호환성 우선 세션 — 재시도 3회 포함"""
+    session = requests.Session()
+    adapter = HTTPAdapter(max_retries=urllib3.Retry(total=3, backoff_factor=2))
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.verify = False  # law.go.kr TLS 핸드셰이크 호환성
+    session.headers.update({"User-Agent": "Mozilla/5.0 (tax-rag collector)"})
+    return session
+
+
+_SESSION = _make_session()
 
 TARGET_LAWS = [
     {"name": "소득세법",                    "mst": "285523", "category": "법률"},
@@ -46,7 +66,7 @@ def fetch_law_version_list(law_name: str) -> list[dict]:
         "display": 100,
         "type": "XML",
     }
-    resp = requests.get(url, params=params, timeout=30)
+    resp = _SESSION.get(url, params=params, timeout=30)
     resp.raise_for_status()
     resp.encoding = "utf-8"
 
@@ -106,7 +126,7 @@ def fetch_law_version_list(law_name: str) -> list[dict]:
 def fetch_law_xml(mst: str) -> str:
     url = f"{BASE_URL}/lawService.do"
     params = {"OC": OC, "target": "law", "MST": mst, "type": "XML"}
-    resp = requests.get(url, params=params, timeout=30)
+    resp = _SESSION.get(url, params=params, timeout=30)
     resp.raise_for_status()
     resp.encoding = "utf-8"
     return resp.text
