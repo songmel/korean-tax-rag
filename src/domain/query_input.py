@@ -196,10 +196,10 @@ class InheritanceDetail:
       지분 동일 → 거주자, 최연장자 순으로 1인 지정.
     """
     death_date: date
-    donor_acquisition_date: date         # 피상속인 원취득일 (보유기간 합산용, 경로 B 필수)
     same_household_at_death: bool        # 사망 전 동일세대 여부
     inherited_as_only_house: bool        # 상속 당시 상속인이 무주택이었는지
     selling_inherited_house: bool        # True: 상속주택 양도(경로B) / False: 일반주택 양도(경로A)
+    donor_acquisition_date: Optional[date] = None  # 피상속인 원취득일 (경로 B 필수, 경로 A 불필요)
 
     # 공동상속 상세
     is_joint_inheritance: bool = False
@@ -360,11 +360,14 @@ class RolloverTaxationDetail:
     이월과세 적용 기간:
       - 2023년 이전 증여: 증여일로부터 5년 이내
       - 2023년 이후 증여: 증여일로부터 10년 이내 (2023.01.01 개정)
+
+    원취득 정보 없이 배우자/직계 여부만 확인된 경우 partial 상태로 생성되며,
+    L2 fact_checker가 원취득 정보 누락을 critical missing으로 차단한다.
     """
     is_gift_from_spouse_or_lineal: bool      # 배우자/직계존비속 증여 여부
     gift_date: date                          # 증여일
-    original_donor_acquisition_date: date   # 증여자 원취득일
-    original_donor_acquisition_price: int   # 증여자 원취득가액
+    original_donor_acquisition_date: Optional[date] = None   # 증여자 원취득일 (누락 시 L2 차단)
+    original_donor_acquisition_price: Optional[int] = None   # 증여자 원취득가액 (누락 시 L2 차단)
 
     @property
     def iota_period_years(self) -> int:
@@ -669,9 +672,11 @@ class FactVector:
         # 이월과세 — 조문 키워드 없으면 §97의2 검색 안 됨
         rt = self.special_cases.rollover_taxation
         if rt and rt.iota_applies:
+            donor_date = str(rt.original_donor_acquisition_date) if rt.original_donor_acquisition_date else "미확인"
+            donor_price = f"{rt.original_donor_acquisition_price:,}원" if rt.original_donor_acquisition_price is not None else "미확인"
             lines.append(
                 f"이월과세적용: 소득세법제97조의2 배우자직계증여후{rt.iota_period_years}년이내양도 "
-                f"증여자원취득일{rt.original_donor_acquisition_date} 원취득가액{rt.original_donor_acquisition_price:,}원"
+                f"증여자원취득일{donor_date} 원취득가액{donor_price}"
             )
 
         # 재건축/재개발 — 관리처분계획인가일 조문 키워드
@@ -809,15 +814,33 @@ def _build_special_cases(fl: dict, up: dict) -> SpecialCaseFlags:
                 new_is_adjustment_area=bool(fl.get("temp_new_is_adjustment_area")),
             )
 
-    # 상속주택
-    if up.get("acquisition_cause") == "상속":
+    # 상속주택 — 경로 A (일반주택 양도) 또는 경로 B (상속주택 양도)
+    # 경로 A: 양도 대상은 일반주택(매매 취득)이지만 세대가 상속주택을 보유
+    #   → fact_ledger에 selling_inherited_house=False로 신호
+    # 경로 B: 상속받은 주택 자체를 양도 → acquisition_cause == "상속"
+    is_inheritance_acquisition = up.get("acquisition_cause") == "상속"
+    has_inheritance_flags = "selling_inherited_house" in fl
+    if is_inheritance_acquisition or has_inheritance_flags:
         sc.is_inherited_house = True
-        if death := _pd(up.get("death_date")):
+        death = _pd(up.get("death_date") or fl.get("death_date"))
+        if death:
             sc.inheritance = InheritanceDetail(
                 death_date=death,
-                same_household_at_death=bool(up.get("deceased_same_household")),
-                inherited_as_only_house=bool(up.get("inherited_as_only_house")),
-                inherited_holding_years=up.get("inherited_holding_years"),
+                same_household_at_death=bool(
+                    fl.get("deceased_same_household") or up.get("deceased_same_household")
+                ),
+                inherited_as_only_house=bool(
+                    fl.get("inherited_as_only_house") or up.get("inherited_as_only_house")
+                ),
+                selling_inherited_house=bool(
+                    fl.get("selling_inherited_house", is_inheritance_acquisition)
+                ),
+                donor_acquisition_date=_pd(
+                    fl.get("donor_acquisition_date") or up.get("donor_acquisition_date")
+                ),
+                inherited_holding_years=(
+                    float(v) if (v := (fl.get("inherited_holding_years") or up.get("inherited_holding_years"))) is not None else None
+                ),
             )
 
     # 혼인합산
@@ -880,15 +903,17 @@ def _build_special_cases(fl: dict, up: dict) -> SpecialCaseFlags:
         if total > 0:
             sc.gyeomyong = GyeomyongDetail(total_area_sqm=total, residential_area_sqm=residential)
 
-    # 이월과세 — 배우자/직계 증여 후 기간 내 양도
-    if fl.get("is_gift_from_spouse_or_lineal") or up.get("acquisition_cause") in ("증여", "부담부증여"):
-        if (gd := _pd(up.get("gift_date") or fl.get("gift_date"))) and \
-           (odat := _pd(fl.get("original_donor_acquisition_date"))):
+    # 이월과세 — is_gift_from_spouse_or_lineal=True가 명시된 경우에만 생성
+    # 단순 "증여" 취득이더라도 배우자/직계 여부가 확인되지 않으면 생성하지 않음
+    # → fact_checker Rule #2가 "is_gift_from_spouse_or_lineal" 재확인 요청
+    if fl.get("is_gift_from_spouse_or_lineal"):
+        gd = _pd(up.get("gift_date") or fl.get("gift_date"))
+        if gd:
             sc.rollover_taxation = RolloverTaxationDetail(
                 is_gift_from_spouse_or_lineal=True,
                 gift_date=gd,
-                original_donor_acquisition_date=odat,
-                original_donor_acquisition_price=int(fl.get("original_donor_acquisition_price", 0)),
+                original_donor_acquisition_date=_pd(fl.get("original_donor_acquisition_date")),
+                original_donor_acquisition_price=_parse_int(fl.get("original_donor_acquisition_price")),
             )
 
     # 재건축/재개발

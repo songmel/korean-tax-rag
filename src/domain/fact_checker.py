@@ -72,6 +72,8 @@ def check_facts(query: RAGQueryInput) -> FactCheckResult:
             is_critical=True,
         ))
         danger.append("고가주택_미확인")
+    elif fv.is_high_value_house:
+        danger.append("고가주택")  # 12억 초과 확인 → L3에서 §89/§156의2 키워드 주입
 
     # ── 2. 이월과세 (가장 위험: 조용히 틀린 결과) ───────────────────────
     is_gift_acquisition = fv.acquisition_reason in (
@@ -106,7 +108,8 @@ def check_facts(query: RAGQueryInput) -> FactCheckResult:
                     ))
 
     # ── 3. 상속주택 — 피상속인 원취득일 없음 ────────────────────────────
-    if fv.acquisition_reason == AcquisitionReason.INHERITANCE:
+    # 경로 A(일반주택 양도) 포함 — acquisition_reason이 PURCHASE여도 sc.is_inherited_house로 감지
+    if fv.acquisition_reason == AcquisitionReason.INHERITANCE or sc.is_inherited_house:
         danger.append("상속주택")
         inh = sc.inheritance
         if inh is None:

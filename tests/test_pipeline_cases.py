@@ -170,23 +170,19 @@ class TestCase2:
     def test_l2_blocks_when_donor_info_missing(self):
         """원취득 정보 없는 경우 → 이것이 실제 L2 차단 케이스.
 
-        ledger에 is_gift_from_spouse_or_lineal=True만 있고 original_donor 정보가
-        없으면 from_fact_ledger()가 rollover_taxation을 완전히 구성하지 못함.
-        fact_checker 규칙 #2: rt is None → 'is_gift_from_spouse_or_lineal' 재확인 요청.
+        is_gift_from_spouse_or_lineal=True + gift_date 있음 → rollover_taxation 생성(partial).
+        fact_checker 규칙 #2: rt.is_gift_from_spouse_or_lineal=True + 5년 이내
+          → original_donor_acquisition_date 누락 감지 → L2 차단.
         """
         ledger_no_donor = {
             "is_gift_from_spouse_or_lineal": True,
-            # original_donor 정보 없음 → rollover_taxation 미구성
+            # original_donor_acquisition_date / _price 없음
         }
         q = build_query(ledger_no_donor, CASE2_OWNER, CASE2_PROP)
         result = check_facts(q)
         assert result.can_proceed is False
-        # rt가 None 또는 미구성 → 'is_gift_from_spouse_or_lineal' 필드 재확인 요청
         fields = [m.field_name for m in result.critical_missing]
-        assert any(
-            "is_gift_from_spouse_or_lineal" in f or "original_donor" in f
-            for f in fields
-        )
+        assert any("original_donor" in f for f in fields)
 
 
 # ── 케이스 3: 일시적 2주택 + 고가주택 ────────────────────────────────────────
