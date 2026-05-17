@@ -15,6 +15,8 @@ from sentence_transformers import CrossEncoder
 
 load_dotenv()
 
+from src.agents.prompts import RAG_SYSTEM_PROMPT, RAG_USER_TEMPLATE
+
 # ── 환경변수 ──────────────────────────────────────────────────
 UPSTAGE_API_KEY = os.getenv("UPSTAGE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -147,32 +149,6 @@ def retrieve_tax_law(
     return chunks
 
 
-# ── LLM 프롬프트 (임시: 추후 agents/prompts.py로 이동) ─────────
-
-_SYSTEM_PROMPT = """당신은 한국 양도소득세 법령 전문 AI 어시스턴트입니다.
-반드시 아래 규칙을 따르세요:
-1. 제공된 법령 조문에만 근거해 답변합니다. 조문에 없는 내용은 추측하지 않습니다.
-2. 불확실한 사실관계가 있으면 '추가 확인 필요' 항목에 명시합니다.
-3. 답변은 반드시 다음 JSON 형식으로만 출력합니다.
-
-{
-  "answer": "요약 판단 및 근거",
-  "citations": ["소득세법 제89조 제1항 제3호", ...],
-  "chunk_ids": ["285523_0890000", ...],
-  "confidence": 0.0~1.0,
-  "missing_facts": ["확인이 필요한 사실관계 목록"],
-  "warnings": ["주의사항 목록"]
-}"""
-
-_USER_TEMPLATE = """다음 법령 조문을 참고해 질문에 답하세요.
-
-=== 검색된 법령 조문 ===
-{context}
-
-=== 질문 ===
-{question}
-
-반드시 JSON 형식으로만 답하세요."""
 
 
 def answer_with_citations(question: str) -> TaxAnswer:
@@ -216,11 +192,11 @@ def answer_with_citations(question: str) -> TaxAnswer:
     message = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2048,
-        system=_SYSTEM_PROMPT,
+        system=RAG_SYSTEM_PROMPT,
         messages=[
             {
                 "role": "user",
-                "content": _USER_TEMPLATE.format(context=context, question=question),
+                "content": RAG_USER_TEMPLATE.format(context=context, question=question),
             }
         ],
     )

@@ -170,13 +170,13 @@ cp .env.example .env   # fill in your API keys
 
 ```bash
 # 1. Collect law XML (cached after first run)
-python src/collect.py
+python -m src.collect
 
 # 2. Embed and upload to Pinecone
-python src/embed.py
+python -m src.embed
 
 # 3. Test RAG retrieval locally
-python src/rag.py
+python -m src.rag
 
 # 4. Run MCP server
 uvicorn src.mcp_server:app --host 0.0.0.0 --port 8001 --reload
