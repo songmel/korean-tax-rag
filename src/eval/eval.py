@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from src.learning.feedback import compute_citation_precision, compute_retrieval_metrics
+from src.eval.feedback import compute_citation_precision, compute_retrieval_metrics
 from src.rag import answer_with_citations, retrieve_tax_law
 
 GOLDEN_PATH = Path("data/golden/qa_pairs.json")

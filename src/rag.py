@@ -244,7 +244,7 @@ def answer_with_citations(
 
     if enable_trace:
         try:
-            from src.learning.feedback import generate_trace_id, log_trace
+            from src.eval.feedback import generate_trace_id, log_trace
             latency_ms = int((_time.time() - t0) * 1000)
             log_trace(
                 trace_id=generate_trace_id(),
