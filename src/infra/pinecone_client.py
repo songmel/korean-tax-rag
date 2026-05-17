@@ -1,0 +1,49 @@
+"""
+Pinecone Serverless 클라이언트 — 인덱스 싱글톤 + 검색 헬퍼.
+"""
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+from dotenv import load_dotenv
+from pinecone import Pinecone
+
+load_dotenv()
+
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "tax-rag")
+PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "tax-law")
+
+_pinecone_index = None
+
+
+def get_pinecone_index():
+    """Pinecone 인덱스 싱글톤."""
+    global _pinecone_index
+    if _pinecone_index is None:
+        if not PINECONE_API_KEY:
+            raise RuntimeError("PINECONE_API_KEY가 필요합니다")
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        _pinecone_index = pc.Index(PINECONE_INDEX_NAME)
+    return _pinecone_index
+
+
+def query_pinecone(
+    vector: list[float],
+    top_k: int = 20,
+    namespace: str = PINECONE_NAMESPACE,
+    filter_dict: Optional[dict] = None,
+) -> list[dict]:
+    """벡터 검색 — matches 리스트 반환 (없으면 빈 리스트)."""
+    index = get_pinecone_index()
+    kwargs = dict(
+        vector=vector,
+        top_k=top_k,
+        namespace=namespace,
+        include_metadata=True,
+    )
+    if filter_dict:
+        kwargs["filter"] = filter_dict
+    result = index.query(**kwargs)
+    return result.get("matches", []) or []
