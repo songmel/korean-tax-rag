@@ -104,7 +104,10 @@ class PineconeTaxLawRetriever(TaxLawRetriever):
         query_text = query.fact_vector.to_text()
         vector = embed_query(query_text)
 
-        # 날짜 필터: transfer_date 기준 (없으면 acquisition_date)
+        # query.top_k 우선, 없으면 인스턴스 기본값
+        top_k = getattr(query, "top_k", None) or self.top_k
+
+        # Stage 1 — Symbolic Filter: 날짜 범위 (Pinecone 숫자 필터)
         pinecone_filter = None
         anchor_date = query.date_bundle.transfer_date or query.date_bundle.acquisition_date
         if anchor_date:
@@ -118,7 +121,7 @@ class PineconeTaxLawRetriever(TaxLawRetriever):
 
         matches = query_pinecone(
             vector=vector,
-            top_k=self.top_k,
+            top_k=top_k,
             namespace=self.namespace,
             filter_dict=pinecone_filter,
         )
@@ -127,13 +130,24 @@ class PineconeTaxLawRetriever(TaxLawRetriever):
         if not matches and pinecone_filter:
             matches = query_pinecone(
                 vector=vector,
-                top_k=self.top_k,
+                top_k=top_k,
                 namespace=self.namespace,
             )
 
         if not matches:
             return []
 
+        # Stage 1 보강 — entity_scope 후필터 (메타데이터 기반, Pinecone에 entity_scopes 있을 때만)
+        scope_val = query.entity_scope.value if query.entity_scope else None
+        if scope_val:
+            filtered = [
+                m for m in matches
+                if not m.get("metadata", {}).get("entity_scopes")  # 태그 없으면 통과
+                or scope_val in m["metadata"]["entity_scopes"]
+            ]
+            matches = filtered if filtered else matches  # 필터 결과 비면 전체 유지
+
+        # Stage 2 — Vector Rerank
         ranked = rerank(query_text, matches, self.rerank_top_n)
 
         results: List[RetrievedChunk] = []

@@ -27,6 +27,72 @@ UPSTAGE_EMBEDDING_MODEL = os.getenv("UPSTAGE_EMBEDDING_MODEL", "solar-embedding-
 PROCESSED_DIR = Path("data/processed")
 BATCH_SIZE = 100  # Pinecone upsert 배치 크기
 
+# ── Stage 1 필터 태깅 규칙 ─────────────────────────────────────────────────────
+# (law_name, article_number_prefix) → (entity_scopes, topic_tags)
+# 업스트림 Stage 1 symbolic filter 의 entity_scope / tax_type 매칭에 사용
+
+def _tag_chunk(law_name: str, article_number: str, full_text: str) -> dict:
+    """
+    조문 정보 기반 규칙 태깅.
+    entity_scopes: ["주택", "분양권", "조합원입주권", "토지", ...]
+    topic_tags: ["1세대1주택비과세", "장기보유특별공제", ...]
+    tax_types: ["transfer"] (현재 수집 대상 전체)
+    """
+    art = article_number.strip().lstrip("제").split("조")[0].replace("의", ".")
+    # "89", "97.2", "154" 등으로 정규화
+
+    entity_scopes: list[str] = []
+    topic_tags: list[str] = []
+
+    # 소득세법 / 소득세법 시행령 → 주택 중심 (분양권·입주권 포함)
+    if "소득세법" in law_name:
+        entity_scopes.append("주택")
+
+        art_num = article_number.lstrip("제").split("조")[0]
+        if art_num in ("89",):
+            topic_tags += ["1세대1주택비과세"]
+        if art_num in ("95",):
+            topic_tags += ["장기보유특별공제"]
+        if art_num in ("97의2", "97.2"):
+            topic_tags += ["1세대1주택비과세", "이월과세"]
+        if art_num in ("104",):
+            topic_tags += ["다주택중과", "세율"]
+        if "시행령" in law_name:
+            if art_num in ("154",):
+                topic_tags += ["1세대1주택비과세"]
+            if art_num in ("155",):
+                topic_tags += ["1세대1주택비과세", "일시적2주택", "상속주택"]
+            if art_num in ("155의3",):
+                topic_tags += ["1세대1주택비과세", "상생임대"]
+                entity_scopes.append("상생임대")
+            if art_num in ("156의2", "156의3"):
+                topic_tags += ["분양권입주권"]
+                entity_scopes += ["분양권", "조합원입주권"]
+            if art_num in ("167의10",):
+                topic_tags += ["다주택중과"]
+            if art_num in ("159의4",):
+                topic_tags += ["장기보유특별공제"]
+
+    # 조세특례제한법 → 임대주택·농어촌주택 특례
+    if "조세특례제한법" in law_name:
+        entity_scopes.append("주택")
+        topic_tags += ["조특법감면"]
+        art_num = article_number.lstrip("제").split("조")[0]
+        if art_num in ("97의3", "97의4", "97의5"):
+            topic_tags += ["장기임대주택"]
+        if art_num in ("99의4",):
+            topic_tags += ["장기임대주택"]
+
+    # 부칙/별표 태그
+    if "부칙" in full_text[:50] or "부  칙" in full_text[:50]:
+        topic_tags.append("부칙경과조치")
+
+    return {
+        "entity_scopes": list(dict.fromkeys(entity_scopes)),  # 순서 유지 중복 제거
+        "topic_tags": list(dict.fromkeys(topic_tags)),
+        "tax_types": ["transfer"],
+    }
+
 
 def _build_embed_client() -> tuple[OpenAI, str, int]:
     """(client, model_name, dimension) 반환"""
@@ -112,9 +178,13 @@ def embed_and_upload(chunks_path: Optional[Path] = None) -> int:
 
         upsert_payload = []
         for chunk, vec in zip(batch, vectors):
+            law_name = chunk.get("law_name", "")
+            article_number = chunk.get("article_number", "")
+            full_text = chunk.get("full_text", "")
+            tags = _tag_chunk(law_name, article_number, full_text)
             metadata = {
-                "law_name": chunk.get("law_name", ""),
-                "article_number": chunk.get("article_number", ""),
+                "law_name": law_name,
+                "article_number": article_number,
                 "article_title": chunk.get("article_title", ""),
                 # Pinecone $lte/$gte는 숫자 타입 전용 — YYYYMMDD 정수로 저장
                 "effective_date": int(chunk["effective_date"]) if chunk.get("effective_date") else 0,
@@ -122,8 +192,12 @@ def embed_and_upload(chunks_path: Optional[Path] = None) -> int:
                 "version_mst": chunk.get("version_mst", chunk.get("law_mst", "")),
                 "law_category": chunk.get("law_category", ""),
                 "source": "law.go.kr",
+                # Stage 1 symbolic filter용 태그 (업스트림 entity_scope/tax_type 매칭)
+                "entity_scopes": tags["entity_scopes"],
+                "topic_tags": tags["topic_tags"],
+                "tax_types": tags["tax_types"],
                 # Pinecone 벡터당 메타데이터 한도 40KB — 4000자까지 저장 (reranker + LLM 모두 이 필드 사용)
-                "full_text": chunk.get("full_text", "")[:4000],
+                "full_text": full_text[:4000],
             }
             upsert_payload.append(
                 {"id": chunk["id"], "values": vec, "metadata": metadata}

@@ -91,3 +91,4 @@ class RAGQueryInput:
     date_bundle: DateBundle
     fact_vector: FactVector
     include_buchik: bool = True
+    top_k: int = 10  # 반환 청크 수 — 업스트림이 쿼리별로 조정 가능
