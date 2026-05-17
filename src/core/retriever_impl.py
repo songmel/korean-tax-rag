@@ -107,17 +107,15 @@ class PineconeTaxLawRetriever(TaxLawRetriever):
         # query.top_k 우선, 없으면 인스턴스 기본값
         top_k = getattr(query, "top_k", None) or self.top_k
 
-        # Stage 1 — Symbolic Filter: 날짜 범위 (Pinecone 숫자 필터)
-        pinecone_filter = None
-        anchor_date = query.date_bundle.transfer_date or query.date_bundle.acquisition_date
-        if anchor_date:
-            as_of_int = int(anchor_date.strftime("%Y%m%d"))
-            pinecone_filter = {
-                "$and": [
-                    {"effective_date": {"$lte": as_of_int}},
-                    {"expiration_date": {"$gte": as_of_int}},
-                ]
-            }
+        # Stage 1 — Symbolic Filter: 양도일 기준 날짜 범위 (Pinecone 숫자 필터)
+        # DateBundle.transfer_date는 required — None 불가
+        as_of_int = int(query.date_bundle.transfer_date.strftime("%Y%m%d"))
+        pinecone_filter = {
+            "$and": [
+                {"effective_date": {"$lte": as_of_int}},
+                {"expiration_date": {"$gte": as_of_int}},
+            ]
+        }
 
         matches = query_pinecone(
             vector=vector,
@@ -126,8 +124,8 @@ class PineconeTaxLawRetriever(TaxLawRetriever):
             filter_dict=pinecone_filter,
         )
 
-        # 날짜 필터 결과 없으면 필터 없이 재검색 (버전 이력 미수집 상태 대응)
-        if not matches and pinecone_filter:
+        # 날짜 필터 결과 없으면 필터 없이 재검색 (법령 버전 이력 미수집 상태 대응)
+        if not matches:
             matches = query_pinecone(
                 vector=vector,
                 top_k=top_k,
@@ -137,8 +135,9 @@ class PineconeTaxLawRetriever(TaxLawRetriever):
         if not matches:
             return []
 
-        # Stage 1 보강 — entity_scope 후필터 (메타데이터 기반, Pinecone에 entity_scopes 있을 때만)
-        scope_val = query.entity_scope.value if query.entity_scope else None
+        # Stage 1 보강 — entity_scope 후필터 (Pinecone entity_scopes 메타데이터 기반)
+        # EntityScope.value = "주택"/"분양권" 등 — embed.py의 _tag_chunk()와 동일한 값 사용
+        scope_val = query.entity_scope.value
         if scope_val:
             filtered = [
                 m for m in matches
