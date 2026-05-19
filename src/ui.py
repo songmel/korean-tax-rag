@@ -58,12 +58,16 @@ def _render_fact_korean(fact: dict) -> None:
 
 st.set_page_config(page_title="양도소득세 RAG", page_icon="⚖️", layout="wide")
 
-# ── 세션 상태 초기화 ──────────────────────────────────────────────────────────
+# ── 세션 상태 초기화 (사이드바보다 반드시 먼저) ──────────────────────────────
 
 if "fact_json_str" not in st.session_state:
     st.session_state.fact_json_str = ""
 if "current_case_label" not in st.session_state:
     st.session_state.current_case_label = ""
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "run_analysis" not in st.session_state:
+    st.session_state.run_analysis = False
 
 # ── 사이드바 ──────────────────────────────────────────────────────────────────
 
@@ -137,12 +141,6 @@ with st.sidebar:
                     st.caption(f"chunk_id: {c.id}")
 
 
-# ── 세션 상태 초기화 (추가 항목) ─────────────────────────────────────────────
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "run_analysis" not in st.session_state:
-    st.session_state.run_analysis = False
 
 # ── 채팅 메시지 표시 ──────────────────────────────────────────────────────────
 
