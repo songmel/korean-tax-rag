@@ -1,92 +1,141 @@
 # CLAUDE.md
 
-AI 코딩 어시스턴트(Claude Code, Codex 등)가 이 프로젝트에서 올바르게 동작하도록 안내합니다.
+AI 코딩 어시스턴트(Claude Code 등)가 이 프로젝트에서 올바르게 동작하도록 안내하는 문서이다.
 
 ---
 
 ## Backlog (Claude Code 전용)
 
 세션 시작 시 이 목록을 확인한다.
-사용자가 다른 작업을 요청하면 그것을 우선하고, 완료한 항목은 이 목록에서 즉시 삭제한다.
+사용자가 다른 작업을 요청하시면 그것을 우선하고, 완료한 항목은 즉시 삭제한다.
 
-- [ ] E2E 테스트 러너 작성 — rag_golden_cases.py 5케이스 실행, verdict/confidence 검증, chunk_ids 수집 → golden qa_pairs.json 기록
-- [ ] 세액 산출 모듈 개발 (src/calculator/) — TaxCalculator, 장기보유특별공제 표1/표2, 세율표, TaxCalculation 모델. 표준 케이스부터, 이월과세·다주택 중과 순으로
+### 진행 중 / 단기
+
+- [ ] E2E 테스트 러너 작성 — 5개 케이스 실행, verdict/confidence 검증, chunk_ids 수집 → golden qa_pairs.json 기록
+- [ ] 세액 산출 모듈 개발 (src/calculator/) — TaxCalculator, 장기보유특별공제 표1/표2, 세율표, TaxCalculation 모델
 - [ ] 부칙(buchik) 별도 수집 구현 — collect.py에서 부칙을 본칙과 분리된 청크로 추출, linked_buchik_ids 연결
 - [ ] chunk_id 포맷 마이그레이션 — {법령명}_{조문}_{항}_{시행일} 형식으로 변경 후 Pinecone reindex (부칙 수집 완료 후)
 
+### 루프 강화 — Verifiable Reward (RLVR)
+
+- [ ] **유권해석 DB 수집기 — 1단계: 구조화 JSON DB 구축**
+  - 수집 대상 (우선순위 순):
+    - 1순위: 국세법령정보시스템 (ntis.go.kr) — 국세청 예규·질의회신 + 기재부 세법해석 통합
+    - 2순위: 조세심판원 결정례 (tt.go.kr) — 납세자 불복 케이스, binary 정답 명확
+    - 3순위: 대법원 판결 (law.go.kr 판례) — 최종 권위, 건수 적음
+  - 출력 스키마: `data/rulings/{source}/{id}.json`
+    ```json
+    {
+      "ruling_id": "서면-2023-부동산-12345",
+      "answer_date": "20230520",
+      "transaction_date": "20230101",
+      "applicable_law_version": "20230101",
+      "verdict": "비과세",
+      "fact_json": { ... },
+      "summary": "...",
+      "source_url": "..."
+    }
+    ```
+  - 날짜 매칭 기준: `transaction_date`가 우리 케이스 `transfer_date`와 같은 법령 시행 구간 내, `answer_date` 5년 이내 우선
+  - 이 DB가 구축되어야 Red-Blue 논쟁이 proxy reward → true verifiable reward로 전환된다.
+- [ ] **유권해석 DB 수집기 — 2단계: 청킹·임베딩 → Pinecone 업로드** (1단계 500건+ 수집 후 진행)
+  - 유권해석 1건 → 2개 청크: 질의 요지(사실관계) + 회신 내용(판단+근거)
+  - Pinecone 별도 네임스페이스 `tax-ruling` 사용
+  - 날짜 메타: `answer_date`, `transaction_date`, `applicable_law_version`
+  - L4 검색 시 법령 조문(`tax-law`)과 함께 병렬 검색 후 통합 reranking
+- [ ] **자동 판정 매칭기** (`src/eval/verdict_matcher.py`) — pipeline verdict와 유권해석 DB를 매칭해 binary reward(1/0) 자동 계산
+- [ ] **L4 ReAct 반복 검색 에이전트** (`src/agents/react_agent.py`) — thought→action→observation 루프, missing_facts 있으면 추가 쿼리 자동 생성 후 재검색 (최대 3 round)
+- [ ] **BGE reranker 파인튜닝 파이프라인** — debate `red_won` 케이스에서 positive/negative pair 추출 → `data/finetune/reranker_pairs.jsonl`
+- [ ] **합성 케이스 생성기** (`src/eval/case_generator.py`) — 실무 케이스에서 변수 1개씩 변형해 경계 케이스 자동 생성
+
+### 중기 아키텍처
+
+- [ ] **법령 버전 이력 수집** — 개정 전 조문 Pinecone 업로드 (취득일 기준 과거 법령 적용)
+- [ ] **멀티턴 사실관계 수집** — blocked_at_l2 발생 시 missing_facts를 후속 질문으로 자동 변환
+- [ ] **세액 계산 연동** — verdict 이후 calculator 모듈 호출, 예상 세액·공제액 포함 답변
+- [ ] **MCP 도구 확장** — calculate_tax, lookup_ruling 추가
+
 ---
 
-## Project Overview
+## 프로젝트 개요
 
-`tax-rag`은 한국 **양도소득세 비과세 / 감면 / 중과 여부 판단**을 위한 법령 RAG 엔진입니다.
+한국 **양도소득세 비과세 / 감면 / 중과 여부 판단**을 위한 법령 RAG 엔진이다.
 
-상위 플랫폼(LinkTax)이 사실관계를 `RAGQueryInput`으로 정리해 넘기면,
-이 엔진이 L2(팩트체크) → L3(쿼리 보강) → L4(법령 검색 + LLM 추론) → L5(출력 검증)
-파이프라인을 실행하고 `TaxAnswer`를 반환합니다.
+JSON 사실관계 입력 → L2(팩트체크) → L3(쿼리 보강) → L4(법령 검색 + LLM 추론) → L5(출력 검증) → TaxAnswer 반환.
 
 **핵심 원칙:**
-- 모든 법령 답변은 반드시 검색된 조문에 근거한다. LLM 기억에서 직접 답변하는 것은 허용하지 않는다.
-- 조문 인용은 실제 검색된 chunk_id가 있는 것만 허용한다.
+- 모든 답변은 반드시 검색된 조문에 근거해야 한다. LLM 기억에서 직접 답변하는 것은 허용하지 않는다.
+- 조문 인용은 실제 검색된 chunk_id가 있는 것만 허용한다. (phantom citation 금지)
 - 불확실한 사실관계가 있으면 결론을 내리지 말고 missing_facts에 명시한다.
 - 모든 판단은 추적 가능(traceable)하고 감사 가능(auditable)해야 한다.
 
 ---
 
-## Core Stack
+## 핵심 스택
 
 | 역할 | 구성요소 |
 |------|---------|
 | 법령 수집 | law.go.kr DRF API (OC=jctax) |
-| 버전 관리 | effective_date / expiration_date 정수(YYYYMMDD) + effective_to=None(현행) |
-| 임베딩 | Upstage Solar (solar-embedding-1-large-passage/query), fallback: OpenAI text-embedding-3-large |
+| 버전 관리 | effective_date / expiration_date 정수(YYYYMMDD) |
+| 임베딩 | Upstage Solar (solar-embedding-1-large-passage), fallback: OpenAI text-embedding-3-large |
 | 벡터 DB | Pinecone Serverless (cosine, dim=4096) |
 | Reranker | BAAI/bge-reranker-v2-m3 (CrossEncoder) |
-| LLM | Claude Sonnet 4.6 (기본), Claude Opus 4.7 (고정밀 모드) |
+| LLM | Claude Sonnet 4.6 (기본), Claude Opus 4.7 (고정밀) |
 | 파이프라인 | src/domain/pipeline.py — L2~L5 오케스트레이터 |
-| API | FastMCP (search_tax_law / analyze_exemption / verify_citations) |
-| UI | Streamlit (내부 디버그 + 피드백 수집) |
-| 평가 | src/eval/feedback.py → data/feedback/ JSONL → src/eval/eval.py 품질 추적 |
+| 채팅 API | src/api/chat_api.py — POST /api/v1/chat + chat_turn() |
+| UI | Streamlit (src/ui.py) — 입력/표시/피드백 수집만 담당 |
+| 평가·루프 | src/eval/debate.py → golden_injector.py → llm_fn.py (우로보로스 루프) |
 
 ---
 
-## Architecture
+## 아키텍처
 
 ```text
-[LinkTax 상위 플랫폼]
-    │  RAGQueryInput (from_fact_ledger로 생성)
+[입력 경로]
+  JSON fact_json ─► src/api/fact_input.py  (FactInput → RAGQueryInput 변환)
+                    src/api/chat_api.py    (chat_turn / POST /api/v1/chat)
+                    src/api/sample_cases.py (35개 실무 케이스)
+  자연어 question ─► src/rag.py answer_with_citations (레거시 경로)
+
     ▼
-src/domain/pipeline.py  ←── L1~L5 파이프라인 오케스트레이터
-    │
-    ├── L2: src/domain/fact_checker.py       (사실관계 완전성 검사, LLM 차단 여부 결정)
-    ├── L3: src/domain/query_enrichment.py   (danger_flags → 조문 키워드 주입)
-    │
-    ├── L4a: src/retrieval/retriever_impl.py (PineconeTaxLawRetriever)
-    │         Stage 1 — Pinecone 날짜/entity_scope 필터
-    │         Stage 2 — BGE Reranker 순위
-    │         retrieve_with_buchik() — 부칙 자동 포함
-    │
-    ├── L4b: src/retrieval/llm_fn.py         (async llm_fn → Claude API)
-    │
-    └── L5: src/domain/output_validator.py   (phantom citation 검사 / 신뢰도 상한)
+src/domain/pipeline.py  — L1~L5 오케스트레이터
+    ├── L2: fact_checker.py       사실관계 완전성 검사, can_proceed=False → LLM 차단
+    ├── L3: query_enrichment.py   danger_flags → 조문 키워드 주입
+    ├── L4a: retriever_impl.py    Pinecone 날짜/entity_scope 필터 → BGE Reranker
+    ├── L4b: llm_fn.py            Claude API 추론 (golden_injector few-shot 포함)
+    └── L5: output_validator.py   phantom citation 검사, 신뢰도 상한 조정
     ▼
 TaxAnswer (verdict / confidence / citations / missing_facts / warnings)
-
-[법령 인덱스 구축]
-src/ingestion/collect.py  ←── law.go.kr DRF XML 수집
-src/ingestion/embed.py    ←── 임베딩 + entity_scopes 태깅 + Pinecone 업로드
-
-[평가 루프]
-src/ui.py → 피드백 수집 → src/eval/feedback.py → data/feedback/
-src/eval/eval.py ← data/golden/qa_pairs.json → 검색 품질 지표
+    ▼  [confidence<0.8 또는 danger_flags>=2일 때]
+src/eval/debate.py  — Red-Blue 논쟁 엔진
+    ├── Red Team: 6가지 오류 유형 검증 (별도 Claude 호출)
+    ├── Blue Team: missing_articles 재검색 후 반박
+    └── 결과 → data/debates/ + data/red_wins/ or data/blue_wins/
+         └── blue_won/no_contest → data/golden/qa_pairs.json (골든셋 누적)
+              └── src/eval/golden_injector.py → 다음 L4 few-shot 주입 (우로보로스 루프)
 ```
 
 ---
 
 ## 파이프라인 진입점
 
+### JSON 입력 (UI / REST API)
+
+```python
+from src.api.chat_api import chat_turn
+
+result = await chat_turn(
+    fact_json={"transfer_date": "20240601", "property_type": "아파트", ...},
+    enable_debate=True,
+)
+# result["verdict"]  → "비과세" | "감면" | "중과" | "일반과세" | "단기세율" | "고가주택" | "사실관계부족"
+# result["blocked"]  → True이면 missing_facts 채워 재요청
+```
+
+### RAGQueryInput 직접 입력 (내부 파이프라인)
+
 ```python
 from src.domain.pipeline import run_rag_pipeline
-from src.domain.query_input import RAGQueryInput
 from src.retrieval.retriever_impl import PineconeTaxLawRetriever
 from src.retrieval.llm_fn import llm_fn
 
@@ -94,302 +143,250 @@ result = await run_rag_pipeline(
     query=RAGQueryInput.from_fact_ledger(fact_ledger, owner_profile, user_property),
     retriever=PineconeTaxLawRetriever(),
     llm_fn=llm_fn,
+    fact_json=fact_json,    # optional — debate/few-shot 활성화용
+    enable_debate=True,
 )
-# result.answer.verdict  → "비과세" | "과세" | "조건부비과세" | "needs_verification"
-# result.answer.confidence
-# result.blocked_at_l2   → True이면 크리티컬 사실 누락으로 LLM 미호출
+# result.answer.verdict     → TaxVerdict 한글 값
+# result.blocked_at_l2      → True이면 크리티컬 사실 누락
+# result.debate_record      → 논쟁 결과 (실행된 경우)
 ```
 
 ---
 
-## 도메인 계약 (src/domain/)
+## 도메인 계약
 
-### RAGQueryInput — 파이프라인 입력
+### TaxVerdict (7종)
 
 ```python
-@dataclass
-class RAGQueryInput:
-    date_bundle: DateBundle      # transfer_date, acquisition_date (required)
-    tax_type: TaxType            # TaxType.TRANSFER
-    entity_scope: EntityScope    # "주택" | "분양권" | "입주권" | ...
-    fact_vector: FactVector      # 사실관계 (to_text()로 벡터 검색 텍스트 생성)
-    top_k: int = 10
-    include_buchik: bool = True  # 부칙 자동 포함
+class TaxVerdict(str, Enum):
+    EXEMPT           = "비과세"      # 소득세법 §89
+    REDUCED          = "감면"        # 조특법 감면
+    HEAVY_TAX        = "중과"        # 다주택자 +20%/+30%
+    GENERAL          = "일반과세"    # 기본세율 6~45%
+    SHORT_TERM       = "단기세율"    # 보유 1년 미만 70%, 1~2년 60%
+    PARTIALLY_EXEMPT = "고가주택"    # 12억 초과분 과세
+    NEEDS_VERIFICATION = "사실관계부족"
 ```
 
-`FactVector.to_text()`는 이월과세/상생임대/재건축 등 조문 키워드를 자동으로 포함해
-벡터 검색 정확도를 높입니다. `SpecialCaseFlags`에 14개 특례 유형이 정의돼 있습니다.
-
-### TaxAnswer — 파이프라인 출력
+### TaxAnswer (출력)
 
 ```python
 @dataclass
 class TaxAnswer:
-    answer: str          # 한국어 판단 상세
-    verdict: str         # "비과세" | "과세" | "조건부비과세" | "needs_verification"
-    confidence: float    # 0.0 ~ 1.0 (L5에서 조정될 수 있음)
-    citations: List[Citation]   # chunk_id 포함 — 검색 결과에 없으면 phantom 처리
+    answer: str               # 한국어 판단 상세
+    verdict: str              # TaxVerdict 한글 값
+    confidence: float         # 0.0~1.0 (L5에서 조정 가능)
+    citations: List[Citation] # chunk_id 포함 — 없으면 phantom 처리
     chunk_ids: List[str]
     missing_facts: List[str]
     warnings: List[str]
 ```
 
+### RAGQueryInput (입력)
+
+```python
+@dataclass
+class RAGQueryInput:
+    date_bundle: DateBundle   # transfer_date, acquisition_date
+    tax_type: TaxType         # TaxType.TRANSFER
+    entity_scope: EntityScope # "주택" | "분양권" | "입주권" | ...
+    fact_vector: FactVector   # to_text()로 벡터 검색 텍스트 생성
+    top_k: int = 10
+    include_buchik: bool = True
+```
+
+`SpecialCaseFlags`에 이월과세/상생임대/일시적2주택/상속/재건축 등 14개 특례 유형이 정의되어 있다.
+
 ---
 
-## Directory Structure
+## 디렉터리 구조
 
 ```text
 tax-rag/
-├── CLAUDE.md
-├── README.md
-├── requirements.txt
-├── .env.example
-│
-├── data/
-│   ├── raw/           # law.go.kr XML (.gitignore)
-│   ├── processed/     # 파싱된 JSON 청크 (.gitignore)
-│   ├── golden/        # 골든 Q&A 데이터셋 (평가용)
-│   │   ├── qa_pairs.json
-│   │   └── example_cases.json
-│   ├── feedback/      # 피드백 JSONL (.gitignore)
-│   └── eval_results/  # 평가 결과
-│
 ├── src/
-│   ├── domain/        # 업스트림 계약 + 파이프라인 로직 (인터페이스·타입·L2~L5)
-│   │   ├── chunk_metadata.py    # LawChunkMetadata + ApplicabilitySpec
+│   ├── domain/        # 인터페이스·타입·L2~L5 로직
 │   │   ├── query_input.py       # RAGQueryInput + FactVector + SpecialCaseFlags
-│   │   ├── tax_answer.py        # TaxAnswer + Citation
-│   │   ├── retriever.py         # TaxLawRetriever ABC + RetrievedChunk
+│   │   ├── tax_answer.py        # TaxAnswer + Citation + TaxVerdict
 │   │   ├── fact_checker.py      # L2: 사실관계 완전성 검사
-│   │   ├── query_enrichment.py  # L3: danger_flags → 조문 키워드 주입
+│   │   ├── query_enrichment.py  # L3: 조문 키워드 주입
 │   │   ├── output_validator.py  # L5: phantom citation / 신뢰도 상한
-│   │   └── pipeline.py          # L1~L5 오케스트레이터
-│   │
-│   ├── retrieval/     # 구현체 (domain 인터페이스 구현)
-│   │   ├── retriever_impl.py    # PineconeTaxLawRetriever (Stage1+2)
-│   │   └── llm_fn.py            # async llm_fn → Claude API
-│   │
-│   ├── infra/         # 외부 서비스 어댑터
+│   │   ├── pipeline.py          # L1~L5 오케스트레이터 + debate 훅
+│   │   ├── chunk_metadata.py    # LawChunkMetadata + ApplicabilitySpec
+│   │   └── retriever.py         # TaxLawRetriever ABC
+│   ├── retrieval/
+│   │   ├── retriever_impl.py    # PineconeTaxLawRetriever
+│   │   └── llm_fn.py            # async llm_fn → Claude API (few-shot 포함)
+│   ├── infra/
 │   │   ├── embedder.py          # Upstage Solar / OpenAI fallback
-│   │   ├── pinecone_client.py   # Pinecone index 연결
+│   │   ├── pinecone_client.py
 │   │   └── reranker.py          # BGE-Reranker-v2-m3
-│   │
-│   ├── ingestion/     # 법령 수집 · 임베딩 파이프라인
+│   ├── ingestion/
 │   │   ├── collect.py           # law.go.kr XML 수집
-│   │   └── embed.py             # 임베딩 + entity_scopes 태깅 + Pinecone 업로드
-│   │
-│   ├── api/           # FastMCP 서버
-│   │   ├── mcp_server.py
-│   │   └── schema.py            # MCP용 Pydantic 스키마 (레거시 shim 호환)
-│   │
-│   ├── eval/          # 평가 루프
-│   │   ├── feedback.py          # trace 로깅 + 검색 품질 지표
+│   │   └── embed.py             # 임베딩 + Pinecone 업로드
+│   ├── api/
+│   │   ├── chat_api.py          # POST /api/v1/chat + chat_turn()
+│   │   ├── fact_input.py        # FactInput → RAGQueryInput 변환 팩토리
+│   │   ├── sample_cases.py      # 35개 실무 케이스
+│   │   ├── mcp_server.py        # FastMCP (search_tax_law 등)
+│   │   └── schema.py            # Pydantic 스키마 (레거시 shim)
+│   ├── eval/
+│   │   ├── debate.py            # Red-Blue 논쟁 엔진
+│   │   ├── golden_injector.py   # 유사 케이스 few-shot 블록 생성
+│   │   ├── feedback.py          # trace 로깅
 │   │   └── eval.py              # 골든셋 배치 평가
-│   │
-│   ├── agents/        # CrewAI 대안 경로 (선택적)
-│   │   ├── prompts.py           # 프롬프트 버전 관리 (llm_fn에서도 사용)
-│   │   ├── crew.py
-│   │   ├── roles.py
-│   │   └── tools.py
-│   │
-│   ├── rag.py         # 레거시 shim — tests/mcp_server 호환용 (신규 코드 금지)
-│   └── ui.py          # Streamlit (디버그 + 피드백 수집)
-│
+│   ├── agents/
+│   │   ├── prompts.py           # RAG_SYSTEM, RED_TEAM, BLUE_DEFENSE 프롬프트
+│   │   ├── crew.py / roles.py / tools.py  # CrewAI 대안 경로 (선택적)
+│   ├── rag.py                   # 레거시 shim (신규 로직 추가 금지)
+│   └── ui.py                    # Streamlit 채팅 UI (판단 로직 추가 금지)
+├── data/
+│   ├── golden/        # qa_pairs.json (debate 누적), example_cases.json
+│   ├── debates/       # 개별 논쟁 기록 ({debate_id}.json)
+│   ├── red_wins/      # Red 승리 케이스
+│   ├── blue_wins/     # Blue 방어 성공 케이스
+│   ├── rulings/       # 유권해석 DB (ntis/, tt/, court/ 하위 디렉터리)
+│   ├── feedback/      # 피드백 JSONL (.gitignore)
+│   ├── raw/           # law.go.kr XML (.gitignore)
+│   └── processed/     # 파싱 JSON 청크 (.gitignore)
 ├── tests/
-│   ├── test_rag.py
-│   └── test_chunking.py
-│
 └── scripts/
-    ├── claude_desktop_config.json
-    └── reindex.ps1
 ```
 
 ---
 
-## Critical DO NOTs
-
-- **API 키, OC 코드, 인덱스명 하드코딩 금지** — 반드시 .env에서 로드
-- **.env 커밋 금지**
-- **RAG 우회 금지** — 법령 질문에 LLM 직접 답변 불허
-- **BGE Reranker 생략 금지** — 최종 조문 선택은 반드시 reranking 후
-- **청킹 전략 무단 변경 금지** — 조문 단위 기준은 법적 정확성의 핵심
-- **법령 계층 구조 평탄화 금지** — 조/항/호/목 메타데이터 반드시 보존
-- **인용 조문 날조 금지** — 검색된 chunk_id에 있는 조문만 인용
-- **ui.py에 판단 로직 추가 금지** — UI는 입력/표시/피드백 수집만
-- **Pinecone namespace/dimension/임베딩 모델 무단 변경 금지**
-- **src/rag.py에 신규 로직 추가 금지** — 레거시 shim, 테스트 호환 유지용
-
----
-
-## Environment Variables
+## 환경 변수
 
 ```env
-# law.go.kr DRF API
 LAW_API_OC=jctax
 LAW_API_BASE_URL=https://www.law.go.kr/DRF
 
-# LLM
 ANTHROPIC_API_KEY=
 CLAUDE_MODEL=claude-sonnet-4-6
 
-# Embeddings
 UPSTAGE_API_KEY=
 UPSTAGE_EMBEDDING_MODEL=solar-embedding-1-large-passage
-OPENAI_API_KEY=                  # Upstage 없을 때 fallback
+OPENAI_API_KEY=          # Upstage fallback
 
-# Pinecone
 PINECONE_API_KEY=
 PINECONE_INDEX_NAME=tax-rag
 PINECONE_NAMESPACE=tax-law
 PINECONE_CLOUD=aws
 PINECONE_REGION=us-east-1
 
-# Reranker
 BGE_RERANKER_MODEL=BAAI/bge-reranker-v2-m3
-
-# Retriever tuning
 RETRIEVER_TOP_K=20
 RETRIEVER_RERANK_TOP_N=5
 
-# Ports
 MCP_PORT=8001
 STREAMLIT_PORT=8501
 ```
 
 ---
 
-## Development Workflow
+## 개발 워크플로
 
 ```bash
-# 설치
 pip install -r requirements.txt
-cp .env.example .env   # API 키 입력
+cp .env.example .env
 
-# 1. 법령 수집
-python -m src.ingestion.collect
-
-# 2. Pinecone 업로드
-python -m src.ingestion.embed
-
-# 3. RAG 레거시 테스트 (shim 경로)
-python -m src.rag
-
-# 4. MCP 서버
-python -m src.api.mcp_server          # stdio 모드 (Claude Desktop)
-python -m src.api.mcp_server --sse    # HTTP SSE 모드
-
-# 5. Streamlit UI
-streamlit run src/ui.py --server.headless true --server.port 8501
-
-# 6. 평가
-python -m src.eval.eval
-
-# 테스트
-pytest
+python -m src.ingestion.collect       # 법령 수집
+python -m src.ingestion.embed         # Pinecone 업로드
+streamlit run src/ui.py               # UI 실행
+python -m src.api.mcp_server --sse    # MCP 서버 (HTTP SSE)
+python -m src.eval.eval               # 골든셋 평가
+pytest                                # 테스트
 ```
 
 ---
 
-## Korean Law Domain Rules
+## 한국 법령 도메인 규칙
 
 ### 법령 계층 구조
 
 ```text
 법률 / 시행령 / 시행규칙
-  └── 조 (Article)
-      └── 항 (Paragraph)
-          └── 호 (Subparagraph)
-              └── 목 (Item)
-부칙 (Supplementary Provisions) — 반드시 본칙과 별도 청크로 분리
+  └── 조 → 항 → 호 → 목
+부칙 (Supplementary Provisions) — 본칙과 별도 청크로 분리한다.
 별표 (Attached Tables) — 장기보유특별공제율 표1/표2 등
 ```
 
+### 유권해석 계층 (구속력 순서)
+
+| 기관 | 종류 | 특징 |
+|------|------|------|
+| 기획재정부 | 세법해석 사전답변, 예규 | 최상위 — 국세청도 따라야 함 |
+| 국세청 (ntis.go.kr) | 예규, 질의회신, 심사결정 | 실무 기준, 건수 가장 많음 |
+| 조세심판원 (tt.go.kr) | 결정례 | 납세자 불복 케이스, binary 정답 |
+| 대법원 | 판결 | 최종 권위, 건수 적음 |
+
 ### 핵심 판단 요소
 
-`FactVector`와 `SpecialCaseFlags`로 구조화해 전달해야 할 사실관계:
-
-| 필드 | 조문 연결 |
+| 필드 | 연결 조문 |
 |------|---------|
 | transfer_date / acquisition_date | §89, §154 보유기간 기산 |
-| household_house_count (COMPUTED) | §89 1세대1주택 판단 |
-| adjustment_area_at_acquisition | §154 거주요건 2년 발생 여부 |
-| adjustment_area_at_transfer | §104 다주택 중과세율 |
-| transfer_price | §156의2 고가주택(12억) 판단 |
-| SpecialCaseFlags.rollover_taxation | §97의2 이월과세 (가장 위험) |
-| SpecialCaseFlags.sangsaeng_rental | §155의3 상생임대 거주요건 면제 |
-| SpecialCaseFlags.is_temporary_two_house | §155① 일시적2주택 |
-| SpecialCaseFlags.inheritance | §155② 상속주택 |
-| SpecialCaseFlags.reconstruction | §156의2 조합원입주권 |
+| household_house_count | §89 1세대1주택 판단 |
+| adjustment_area_at_acquisition | §154 거주요건 2년 |
+| adjustment_area_at_transfer | §104 다주택 중과 |
+| transfer_price | §156의2 고가주택(12억) |
+| rollover_taxation | §97의2 이월과세 (오류 위험 최고) |
+| sangsaeng_rental | §155의3 상생임대 |
+| is_temporary_two_house | §155① 일시적2주택 |
+| inheritance | §155② 상속주택 |
+| reconstruction | §156의2 조합원입주권 |
 
-### 버전 관리 원칙
+### Pinecone 버전 관리
 
-- Pinecone에 `effective_date`(정수 YYYYMMDD), `expiration_date`(정수, 현행=99991231) 저장
+- 메타데이터: `effective_date`(YYYYMMDD 정수), `expiration_date`(현행=99991231)
 - Stage 1 필터: `effective_date <= transfer_date AND expiration_date >= transfer_date`
-- 결과 없으면 fallback: 필터 없이 재검색 (법령 버전 이력 미수집 상태 대응)
-- 부칙 경과조치: `applicability.anchors`가 `acquisition_date`인 경우 취득일 기준으로 체크
-
-### Pinecone 메타데이터 스키마
-
-```json
-{
-  "law_name": "소득세법 시행령",
-  "article_number": "154",
-  "article_title": "1세대1주택의 범위",
-  "effective_date": 20240101,
-  "expiration_date": 99991231,
-  "version_mst": "285631",
-  "law_category": "대통령령",
-  "entity_scopes": ["주택"],
-  "topic_tags": ["1세대1주택비과세"],
-  "tax_types": ["transfer"],
-  "full_text": "제154조(1세대1주택의 범위) ..."
-}
-```
+- 결과가 없으면 필터 없이 재검색한다. (법령 이력 미수집 대응)
 
 ---
 
 ## L2 팩트체크 — 크리티컬 규칙
 
-`src/domain/fact_checker.py`의 `check_facts()`가 LLM 호출 전 실행합니다.
-크리티컬 항목이 1개라도 누락되면 `can_proceed=False` → LLM 미호출 → 재질문 반환.
+크리티컬 항목이 1개라도 누락되면 `can_proceed=False` → LLM 미호출 → 재질문을 반환한다.
 
 | 우선순위 | 누락 필드 | 이유 |
 |---------|---------|------|
-| 1 | transfer_price | 고가주택(12억) 여부 불가 |
-| 2 | is_gift_from_spouse_or_lineal | 이월과세 적용 여부 (조용히 틀릴 위험 최고) |
-| 3 | death_date (상속) | §155 5년 기간 기산 불가 |
+| 1 | transfer_price | 고가주택(12억) 판단 불가 |
+| 2 | is_gift_from_spouse_or_lineal | 이월과세 (조용히 틀릴 위험 최고) |
+| 3 | death_date (상속) | §155 5년 기산 불가 |
 | 4 | temp_two_house.new_acquisition_date | 종전주택 3년 기한 계산 불가 |
 | 5 | management_disposal_date (입주권) | 보유기간 기산 불가 |
 
 ---
 
-## Coding Standards
+## 코딩 규칙
 
-- 모든 public 함수에 Python type hints
-- 도메인 모델은 `src/domain/`의 dataclass (Pydantic은 MCP API 스키마만)
-- 도메인 프롬프트·사용자 노출 텍스트는 한국어
-- 함수명·변수명·코드 주석은 영어
-- 모든 프롬프트는 `src/agents/prompts.py`에서 버전 관리 (인라인 금지)
-- `ui.py`에 판단 로직 없음
-- `src/rag.py`는 레거시 shim — 신규 로직 추가 금지
-
-## Git Commit Convention
-
-- **모든 커밋 메시지는 한국어로 작성한다**
-- 형식: `타입: 변경 내용 요약`
-- 타입: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+- 모든 public 함수에 Python type hints를 작성한다.
+- 도메인 모델은 `src/domain/` dataclass를 사용한다. Pydantic은 API 스키마 전용이다.
+- 사용자 노출 텍스트는 한국어, 함수명·변수명·코드 주석은 영어로 작성한다.
+- 모든 프롬프트는 `src/agents/prompts.py`에서 버전 관리한다. 인라인 작성은 금지이다.
+- 커밋 메시지: 한국어, `타입: 요약` 형식 (feat/fix/docs/refactor/test/chore)
 
 ---
 
-## Testing Priorities
+## 절대 금지 사항 (Critical DO NOTs)
 
-- XML 파서가 조/항/호/목 구조 보존
-- 모든 청크에 `law_name`, `article_number`, `effective_date`, `expiration_date` 존재
-- Pinecone 날짜 필터가 정수(YYYYMMDD) 타입으로 동작
-- 검색 결과에 chunk_id 반드시 포함
-- BGE Reranker가 최종 선택 전에 반드시 호출됨
-- 인용 조문은 검색된 청크에만 해당 (phantom citation 없음)
-- missing_facts는 추측하지 않고 명시
-- `ui.py`에 판단 로직 없음
-- L2 크리티컬 누락 시 LLM 미호출 확인
-- L5 phantom citation 검출 시 confidence 0.3 이하 확인
+- API 키, OC 코드, 인덱스명 **하드코딩 금지** — .env에서만 로드한다.
+- **.env 커밋 금지**
+- **RAG 우회 금지** — 법령 질문에 LLM 직접 답변은 허용되지 않는다.
+- **BGE Reranker 생략 금지** — 최종 조문 선택은 반드시 reranking 이후에 진행한다.
+- **청킹 전략 무단 변경 금지** — 조문 단위 기준은 법적 정확성의 핵심이다.
+- **법령 계층 구조 평탄화 금지** — 조/항/호/목 메타데이터를 반드시 보존한다.
+- **인용 조문 날조 금지** — 검색된 chunk_id에 있는 조문만 인용한다.
+- **ui.py에 판단 로직 추가 금지** — 입력/표시/피드백 수집만 담당한다.
+- **Pinecone namespace/dimension/임베딩 모델 무단 변경 금지**
+- **src/rag.py에 신규 로직 추가 금지** — 레거시 shim 유지 전용이다.
+
+---
+
+## 테스트 우선순위
+
+- XML 파서가 조/항/호/목 구조를 보존하는지 확인한다.
+- 모든 청크에 `law_name`, `article_number`, `effective_date`, `expiration_date`가 존재해야 한다.
+- Pinecone 날짜 필터가 정수(YYYYMMDD) 타입으로 동작하는지 확인한다.
+- BGE Reranker가 최종 선택 전 반드시 호출되어야 한다.
+- 인용 조문은 검색된 청크에만 해당해야 한다. (phantom citation 없음)
+- L2 크리티컬 누락 시 LLM이 미호출되는지 확인한다.
+- L5 phantom citation 검출 시 confidence가 0.3 이하인지 확인한다.

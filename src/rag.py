@@ -268,6 +268,40 @@ def answer_with_citations(
     return tax_answer
 
 
+# ── L1-L5 파이프라인 진입점 (채팅 모드용) ──────────────────────────────────────
+
+async def answer_with_pipeline(fact_json: dict) -> "TaxAnswer":
+    """
+    JSON 사실관계 → L1-L5 파이프라인 → TaxAnswer (레거시 Pydantic 형식).
+
+    기존 answer_with_citations()와 달리 fact_checker / query_enrichment /
+    output_validator 를 모두 경유해 정확한 세율 판단을 수행한다.
+    verdict 필드에 비과세/감면/중과/일반과세/단기세율 등을 반환한다.
+    """
+    from src.api.fact_input import FactInput, fact_input_to_rag_query
+    from src.domain.pipeline import run_rag_pipeline
+    from src.retrieval.retriever_impl import PineconeTaxLawRetriever
+    from src.retrieval.llm_fn import llm_fn
+
+    query = fact_input_to_rag_query(FactInput(**fact_json))
+    retriever = PineconeTaxLawRetriever()
+    result = await run_rag_pipeline(query, retriever, llm_fn)
+
+    ans = result.answer
+    citations_str = [
+        f"{c.article}" if hasattr(c, "article") else str(c)
+        for c in ans.citations
+    ]
+    return TaxAnswer(
+        answer=ans.answer,
+        citations=citations_str,
+        chunk_ids=ans.chunk_ids,
+        confidence=ans.confidence,
+        missing_facts=ans.missing_facts,
+        warnings=ans.warnings,
+    )
+
+
 # ── CLI 진입점 (rag.py 단독 실행) ─────────────────────────────────────────────
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ RAG 파이프라인 진입점 — L1~L5 통합
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, List, Optional, Set
+from typing import Any, Awaitable, Callable, List, Optional, Set
 
 from .fact_checker import FactCheckResult, check_facts
 from .output_validator import validate_output
@@ -29,12 +29,16 @@ class PipelineResult:
     enriched_query: str
     retrieved_chunks: List[RetrievedChunk] = field(default_factory=list)
     blocked_at_l2: bool = False
+    debate_record: Optional[dict] = None   # 논쟁이 실행된 경우 결과 요약
 
 
 async def run_rag_pipeline(
     query: RAGQueryInput,
     retriever: TaxLawRetriever,
     llm_fn: Callable[[str, List[RetrievedChunk], List[str]], Awaitable[TaxAnswer]],
+    fact_json: Optional[dict] = None,
+    enable_debate: bool = False,
+    debate_auto_promote: bool = True,
 ) -> PipelineResult:
     """
     L1: schema validation — RAGQueryInput 생성 시 이미 처리됨
@@ -87,9 +91,42 @@ async def run_rag_pipeline(
     # ── L5: Output Validation ────────────────────────────────────────────
     validated = validate_output(raw_answer, retrieved_ids)
 
-    return PipelineResult(
+    result = PipelineResult(
         answer=validated,
         fact_check=fact_check,
         enriched_query=enriched_query,
         retrieved_chunks=chunks,
     )
+
+    # ── 선택적 Red-Blue 논쟁 ─────────────────────────────────────────────
+    if enable_debate and fact_json:
+        try:
+            from src.eval.debate import run_red_blue_debate, should_debate
+            if should_debate(result):
+                debate = await run_red_blue_debate(
+                    fact_json=fact_json,
+                    pipeline_result=result,
+                    auto_promote=debate_auto_promote,
+                )
+                result.debate_record = {
+                    "debate_id": debate.debate_id,
+                    "outcome": debate.outcome,
+                    "challenge_type": debate.red_challenge.get("challenge_type"),
+                    "revised_verdict": debate.blue_defense.get("revised_verdict"),
+                    "promoted_to_golden": debate.promoted_to_golden,
+                }
+                # Red가 이겼으면 파이프라인 최종 verdict 업데이트
+                if debate.outcome == "red_won":
+                    revised = debate.blue_defense.get("revised_verdict", validated.verdict)
+                    result.answer = validated.with_update(
+                        verdict=revised,
+                        warnings=validated.warnings + [
+                            f"[Red Team 수정] {debate.red_challenge.get('challenge_type')}: "
+                            f"{debate.blue_defense.get('defense_text', '')[:100]}"
+                        ],
+                    )
+        except Exception as e:
+            # 논쟁 실패가 주 파이프라인을 막으면 안 됨
+            result.debate_record = {"error": str(e)}
+
+    return result

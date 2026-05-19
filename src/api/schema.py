@@ -287,11 +287,14 @@ class TaxCase(BaseModel):
 
 class TaxDecision(BaseModel):
     verdict: Literal[
-        "exempt",               # 비과세
-        "taxable",              # 과세
-        "partially_exempt",     # 고가주택 — 12억 이하 비과세, 초과 과세
-        "needs_verification",   # 사실관계 불충분 — 판단 불가
-        "manual_review",        # 복잡성 높음 — 전문가 검토 필요
+        "비과세",           # 소득세법 §89 — 1세대 1주택 등
+        "감면",             # 조특법 감면 규정 (8년 자경 등)
+        "중과",             # 다주택자 중과세율 (+20%p/+30%p)
+        "일반과세",         # 기본세율 6~45%
+        "단기세율",         # 보유 1년 미만 70%, 1~2년 60%
+        "고가주택",         # 12억 초과분만 과세
+        "사실관계부족",     # 필수 사실관계 미확인
+        "전문가검토",       # 복잡성 높음 — 세무사 상담 필요
     ]
     answer: str                 # 상세 판단 (법령 근거 포함)
     citations: list[str]        # ["소득세법 제89조 제1항 제3호", ...]

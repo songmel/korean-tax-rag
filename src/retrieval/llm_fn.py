@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import List
+from typing import List, Optional
 
 import anthropic
 from dotenv import load_dotenv
@@ -28,6 +28,7 @@ def _build_user_prompt(
     enriched_query: str,
     chunks: List[RetrievedChunk],
     missing_hints: List[str],
+    few_shot_block: str = "",
 ) -> str:
     """검색 결과 + 누락 힌트 → Claude user prompt."""
     context_parts = []
@@ -46,12 +47,13 @@ def _build_user_prompt(
         hints_text = "\n\n[추가 확인 필요 항목 — 이 정보가 없어 판단에 불확실성이 있습니다]\n"
         hints_text += "\n".join(f"- {h}" for h in missing_hints)
 
+    few_shot_section = f"\n{few_shot_block}\n" if few_shot_block else ""
+
     return f"""다음 법령 조문을 근거로 판단하십시오.
 
 [검색된 법령 조문]
 {context}
-{hints_text}
-
+{hints_text}{few_shot_section}
 [질문]
 {enriched_query}
 
@@ -72,6 +74,7 @@ async def llm_fn(
     enriched_query: str,
     chunks: List[RetrievedChunk],
     missing_hints: List[str],
+    fact_json: Optional[dict] = None,
 ) -> TaxAnswer:
     """
     업스트림 시그니처 — 검색된 청크와 누락 힌트로 TaxAnswer 생성.
@@ -86,8 +89,17 @@ async def llm_fn(
             warnings=["LLM 미설정"],
         )
 
+    # 골든셋 few-shot 주입 (5건 이상 쌓인 경우에만)
+    few_shot_block = ""
+    if fact_json:
+        try:
+            from src.eval.golden_injector import build_few_shot_block
+            few_shot_block = build_few_shot_block(fact_json)
+        except Exception:
+            pass
+
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    user_prompt = _build_user_prompt(enriched_query, chunks, missing_hints)
+    user_prompt = _build_user_prompt(enriched_query, chunks, missing_hints, few_shot_block)
 
     loop = asyncio.get_event_loop()
     message = await loop.run_in_executor(

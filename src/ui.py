@@ -1,132 +1,303 @@
 """
-Streamlit 디버그 UI
+Streamlit 채팅 UI
 입력 수집 + 결과 표시만 담당. 법령 판단 로직 없음.
 """
+import asyncio
+import json
+import random
+import sys
+import os
+
+# streamlit run src/ui.py 실행 시 프로젝트 루트를 sys.path에 추가
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import streamlit as st
 
+from src.api.sample_cases import CATEGORY_LABELS, SAMPLE_CASES
+
+# ── 사실관계 한국어 표시 ───────────────────────────────────────────────────────
+
+_FIELD_LABELS = {
+    "transfer_date": "양도일",
+    "acquisition_date": "취득일",
+    "property_type": "부동산 종류",
+    "acquisition_reason": "취득 원인",
+    "household_house_count": "보유 주택 수",
+    "transfer_price": "양도가액",
+    "acquisition_price": "취득가액",
+    "residence_years": "거주기간(년)",
+    "holding_years": "보유기간(년)",
+    "is_adjustment_area_at_transfer": "양도시 조정대상지역",
+    "is_adjustment_area_at_acquisition": "취득시 조정대상지역",
+    "is_gift_from_spouse_or_lineal": "배우자/직계존비속 증여",
+    "special_cases": "특례 사항",
+}
+
+
+def _fmt_value(v) -> str:
+    if isinstance(v, bool):
+        return "예" if v else "아니오"
+    if isinstance(v, int):
+        return f"{v:,}"
+    if isinstance(v, float):
+        formatted = f"{v:,.3f}".rstrip("0").rstrip(".")
+        return formatted
+    if isinstance(v, str) and len(v) == 8 and v.isdigit():
+        return f"{v[:4]}-{v[4:6]}-{v[6:]}"
+    if isinstance(v, dict):
+        return ", ".join(f"{k}: {_fmt_value(vv)}" for k, vv in v.items())
+    return str(v)
+
+
+def _render_fact_korean(fact: dict) -> None:
+    for k, v in fact.items():
+        label = _FIELD_LABELS.get(k, k)
+        col1, col2 = st.columns([4, 5])
+        col1.caption(label)
+        col2.caption(f"**{_fmt_value(v)}**")
+
 st.set_page_config(page_title="양도소득세 RAG", page_icon="⚖️", layout="wide")
-st.title("양도소득세 비과세 판단 시스템")
-st.caption("법령 조문 기반 RAG — 본 답변은 법률 자문이 아닌 정보 제공 목적입니다.")
 
-# ── 사이드바: 모드 선택 ────────────────────────────────────────────────────────
+# ── 세션 상태 초기화 ──────────────────────────────────────────────────────────
 
-mode = st.sidebar.radio(
-    "실행 모드",
-    ["RAG 단독 (빠름)", "CrewAI 2-Agent (정밀)"],
-)
+if "fact_json_str" not in st.session_state:
+    st.session_state.fact_json_str = ""
+if "current_case_label" not in st.session_state:
+    st.session_state.current_case_label = ""
 
-with st.sidebar.expander("RAG 파라미터"):
-    top_k = st.slider("top_k (벡터 검색 후보)", 5, 50, 20)
-    rerank_top_n = st.slider("rerank_top_n (최종 선택)", 1, 10, 5)
+# ── 사이드바 ──────────────────────────────────────────────────────────────────
 
-# ── 메인: 사실관계 입력폼 ───────────────────────────────────────────────────────
+with st.sidebar:
+    st.title("양도소득세 RAG")
+    st.caption("법령 조문 기반 — 법률 자문이 아닌 정보 제공 목적입니다.")
 
-with st.form("fact_form"):
-    st.subheader("사실관계 입력")
-    col1, col2 = st.columns(2)
-    with col1:
-        acquisition_date = st.text_input("취득일", placeholder="예: 2020-03-15")
-        transfer_date = st.text_input("양도일", placeholder="예: 2024-08-01")
-        holding_years = st.text_input("보유기간", placeholder="예: 4년 5개월")
-        residence_years = st.text_input("거주기간", placeholder="예: 2년")
-    with col2:
-        household_members = st.text_input("세대원 구성", placeholder="예: 배우자, 자녀 1명")
-        house_count = st.selectbox("양도 당시 보유 주택 수", ["1주택", "2주택", "3주택 이상"])
-        is_adjustment_area = st.selectbox("조정대상지역 여부", ["해당 없음", "해당"])
-        special_case = st.multiselect(
-            "특수 상황",
-            ["일시적 2주택", "상속", "증여", "혼인", "동거봉양", "농어촌주택", "장기임대주택"],
-        )
+    st.divider()
+    st.subheader("케이스 생성기")
 
-    free_text = st.text_area(
-        "추가 사항 / 자유 질문",
-        placeholder="예: 2년 이상 보유한 1세대 1주택인데 비과세가 되나요?",
-        height=100,
+    # ── 케이스 선택 ──────────────────────────────────────────────────────────
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("🎲 랜덤 케이스", use_container_width=True):
+            case = random.choice(SAMPLE_CASES)
+            st.session_state.fact_json_str = json.dumps(
+                case["fact_json"], ensure_ascii=False, indent=2
+            )
+            st.session_state.current_case_label = (
+                f"{CATEGORY_LABELS.get(case['category'], case['category'])}  \n{case['label']}"
+            )
+            st.rerun()
+    with col_btn2:
+        if st.button("🗑️ 초기화", use_container_width=True):
+            st.session_state.fact_json_str = ""
+            st.session_state.current_case_label = ""
+            st.rerun()
+
+    if st.session_state.current_case_label:
+        st.info(st.session_state.current_case_label, icon="✅")
+
+    fact_json_str = st.session_state.fact_json_str
+
+    if st.button("⚡ 분석 시작", type="primary", use_container_width=True):
+        st.session_state.run_analysis = True
+        st.rerun()
+
+    if st.button("💬 대화 초기화", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
+
+    st.divider()
+    enable_debate = st.toggle(
+        "🔴 Red Team 검증",
+        value=False,
+        help="confidence < 0.8 또는 복합 특례 케이스에 자동으로 Red-Blue 논쟁을 실행합니다. 응답 시간이 늘어납니다.",
     )
-    submitted = st.form_submit_button("판단 요청", type="primary")
 
-# ── 실행 ───────────────────────────────────────────────────────────────────────
+    with st.expander("RAG 파라미터"):
+        top_k = st.slider("top_k", 5, 50, 20)
+        rerank_top_n = st.slider("rerank_top_n", 1, 10, 5)
 
-if submitted:
-    # 사실관계를 자연어 질문으로 조합
-    facts = []
-    if acquisition_date:
-        facts.append(f"취득일: {acquisition_date}")
-    if transfer_date:
-        facts.append(f"양도일: {transfer_date}")
-    if holding_years:
-        facts.append(f"보유기간: {holding_years}")
-    if residence_years:
-        facts.append(f"거주기간: {residence_years}")
-    if household_members:
-        facts.append(f"세대원: {household_members}")
-    facts.append(f"보유 주택 수: {house_count}")
-    if is_adjustment_area != "해당 없음":
-        facts.append("조정대상지역 해당")
-    if special_case:
-        facts.append(f"특수 상황: {', '.join(special_case)}")
+    with st.expander("논쟁 통계"):
+        if st.button("통계 새로고침"):
+            from src.eval.debate import debate_summary
+            from src.eval.golden_injector import golden_summary
+            ds = debate_summary()
+            gs = golden_summary()
+            st.json({**ds, "golden": gs})
 
-    fact_str = " / ".join(facts)
-    question = f"{fact_str}\n{free_text}".strip() if free_text else fact_str
+    with st.expander("RAG 검색 디버그"):
+        debug_query = st.text_input("검색 쿼리")
+        if st.button("검색") and debug_query:
+            from src.rag import retrieve_tax_law
+            with st.spinner("검색 중..."):
+                chunks = retrieve_tax_law(debug_query, top_k=top_k, rerank_top_n=rerank_top_n)
+            st.write(f"{len(chunks)}개 조문")
+            for i, c in enumerate(chunks, 1):
+                with st.expander(f"[{i}] {c.law_name} 제{c.article_number}조 {c.score:.3f}"):
+                    st.text(c.full_text)
+                    st.caption(f"chunk_id: {c.id}")
 
-    if not question:
-        st.warning("사실관계를 입력해주세요.")
-        st.stop()
 
-    # 취득일을 기준일자로 자동 사용
-    as_of_date = acquisition_date.replace("-", "") if acquisition_date else None
+# ── 세션 상태 초기화 (추가 항목) ─────────────────────────────────────────────
 
-    with st.spinner("법령 검색 및 판단 중..."):
-        if mode == "RAG 단독 (빠름)":
-            from src.rag import answer_with_citations
-            answer = answer_with_citations(question, as_of_date=as_of_date)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "run_analysis" not in st.session_state:
+    st.session_state.run_analysis = False
 
-            st.success("판단 완료")
-            st.subheader("요약 판단")
-            st.write(answer.answer)
+# ── 채팅 메시지 표시 ──────────────────────────────────────────────────────────
 
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.metric("신뢰도", f"{answer.confidence:.0%}")
-            with col_b:
-                st.metric("인용 조문 수", len(answer.citations))
+st.markdown("## 양도소득세 판단 채팅")
 
-            if answer.citations:
-                st.subheader("근거 법령")
-                for c in answer.citations:
-                    st.markdown(f"- {c}")
-
-            if answer.missing_facts:
-                st.subheader("추가 확인 필요")
-                for f in answer.missing_facts:
-                    st.warning(f)
-
-            if answer.warnings:
-                st.subheader("유의사항")
-                for w in answer.warnings:
-                    st.info(w)
-
-            with st.expander("검색된 chunk_id 목록"):
-                st.json(answer.chunk_ids)
-
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        if msg["role"] == "user" and msg.get("fact_json"):
+            if msg.get("case_label"):
+                st.markdown(f"**{msg['case_label']}**")
+            _render_fact_korean(msg["fact_json"])
         else:
-            from src.agents.crew import run_tax_crew
-            result = run_tax_crew(question)
+            st.markdown(msg["content"])
+        if "extra" in msg:
+            extra = msg["extra"]
+            _verdict = extra.get("verdict", "")
+            _conf = extra.get("confidence", 0.0)
+            _citations = extra.get("citations", [])
+            _missing = extra.get("missing_facts", [])
+            _warnings = extra.get("warnings", [])
+            _chunks = extra.get("chunk_ids", [])
 
-            st.success("CrewAI 판단 완료")
-            st.subheader("최종 답변")
-            st.markdown(result)
+            c1, c2 = st.columns(2)
+            with c1:
+                verdict_color = {
+                    "비과세": "green", "감면": "blue", "중과": "red",
+                    "일반과세": "orange", "단기세율": "red",
+                    "고가주택": "orange", "사실관계부족": "gray",
+                }.get(_verdict, "gray")
+                st.markdown(f"**판단: :{verdict_color}[{_verdict}]**")
+            with c2:
+                st.metric("신뢰도", f"{_conf:.0%}")
 
-# ── 디버그: RAG 검색 단독 실행 ─────────────────────────────────────────────────
+            if _citations:
+                with st.expander("근거 법령"):
+                    for c in _citations:
+                        st.markdown(f"- {c}")
+            if _missing:
+                with st.expander("추가 확인 필요"):
+                    for m in _missing:
+                        st.warning(m, icon="⚠️")
+            if _warnings:
+                with st.expander("유의사항"):
+                    for w in _warnings:
+                        st.info(w)
+            if _chunks:
+                with st.expander("검색된 조문 ID"):
+                    st.write(_chunks)
 
-with st.expander("RAG 검색 디버그"):
-    debug_query = st.text_input("검색 쿼리 직접 입력")
-    if st.button("검색") and debug_query:
-        from src.rag import retrieve_tax_law
-        with st.spinner("검색 중..."):
-            chunks = retrieve_tax_law(debug_query, top_k=top_k, rerank_top_n=rerank_top_n)
-        st.write(f"결과: {len(chunks)}개")
-        for i, chunk in enumerate(chunks, 1):
-            with st.expander(f"[{i}] {chunk.law_name} 제{chunk.article_number}조 — score: {chunk.score:.4f}"):
-                st.text(chunk.full_text)
-                st.caption(f"chunk_id: {chunk.id} | 시행일: {chunk.effective_date}")
+
+# ── 분석 실행 함수 ────────────────────────────────────────────────────────────
+
+def _render_pipeline_result(result: dict) -> None:
+    """파이프라인 결과를 채팅 말풍선 안에 렌더링."""
+    verdict = result["verdict"]
+    answer_text = result["answer"]
+    st.markdown(answer_text)
+
+    verdict_color = {
+        "비과세": "green", "감면": "blue", "중과": "red",
+        "일반과세": "orange", "단기세율": "red",
+        "고가주택": "orange", "사실관계부족": "gray",
+    }.get(verdict, "gray")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**판단: :{verdict_color}[{verdict}]**")
+    with c2:
+        st.metric("신뢰도", f"{result['confidence']:.0%}")
+
+    if result.get("citations"):
+        with st.expander("근거 법령"):
+            for c in result["citations"]:
+                st.markdown(f"- {c}")
+    if result.get("missing_facts"):
+        with st.expander("추가 확인 필요"):
+            for m in result["missing_facts"]:
+                st.warning(m, icon="⚠️")
+    if result.get("warnings"):
+        with st.expander("유의사항"):
+            for w in result["warnings"]:
+                st.info(w)
+    if result.get("chunk_ids"):
+        with st.expander("검색된 조문 ID"):
+            st.write(result["chunk_ids"])
+    if result.get("debate_record"):
+        dr = result["debate_record"]
+        outcome_label = {
+            "blue_won": "🔵 Blue 방어 성공",
+            "red_won": "🔴 Red 지적 수용 — 판단 수정됨",
+            "no_contest": "✅ Red 이의 없음",
+            "draw": "⚖️ 논쟁 무승부",
+        }.get(dr.get("outcome", ""), "논쟁 실행됨")
+        with st.expander(f"Red Team 검증 결과: {outcome_label}"):
+            st.write(dr)
+
+
+def _run_analysis(user_text: str, parsed_fact: dict | None) -> None:
+    """분석 실행 후 채팅 히스토리에 추가."""
+    case_label = st.session_state.current_case_label if parsed_fact else None
+    msg_entry: dict = {"role": "user", "content": user_text}
+    if parsed_fact:
+        msg_entry["fact_json"] = parsed_fact
+        msg_entry["case_label"] = case_label
+    st.session_state.messages.append(msg_entry)
+    with st.chat_message("user"):
+        if parsed_fact:
+            if case_label:
+                st.markdown(f"**{case_label}**")
+            _render_fact_korean(parsed_fact)
+        else:
+            st.markdown(user_text)
+
+    with st.chat_message("assistant"):
+        with st.spinner("법령 검색 및 판단 중..."):
+            from src.api.chat_api import chat_turn
+            result = asyncio.run(chat_turn(
+                fact_json=parsed_fact,
+                question=user_text if not parsed_fact else None,
+                enable_debate=enable_debate,
+            ))
+            _render_pipeline_result(result)
+            extra = {k: result[k] for k in ("verdict", "confidence", "citations", "missing_facts", "warnings", "chunk_ids")}
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": result["answer"],
+                "extra": extra,
+            })
+
+
+# ── 사이드바 분석 버튼 트리거 ────────────────────────────────────────────────
+
+if st.session_state.run_analysis:
+    st.session_state.run_analysis = False
+    parsed_fact = None
+    if fact_json_str.strip():
+        try:
+            parsed_fact = json.loads(fact_json_str)
+        except json.JSONDecodeError:
+            parsed_fact = None
+    if parsed_fact:
+        label = st.session_state.current_case_label or "사실관계 분석"
+        _run_analysis(label, parsed_fact)
+    else:
+        st.warning("먼저 케이스를 생성해주세요.")
+
+
+# ── 채팅 입력 ─────────────────────────────────────────────────────────────────
+
+user_input = st.chat_input("추가 질문을 입력하거나, 케이스 선택 후 '⚡ 분석 시작'을 클릭하세요.")
+
+if user_input:
+    parsed_fact = None
+    if fact_json_str.strip():
+        try:
+            parsed_fact = json.loads(fact_json_str)
+        except json.JSONDecodeError:
+            parsed_fact = None
+    _run_analysis(user_input, parsed_fact)
