@@ -28,6 +28,20 @@ class Citation:
 
 
 @dataclass
+class ExpertReviewSignal:
+    """
+    세무사 전문 검토 기회 신호 — 예규 공백/판례 의존 영역 탐지 시 출력.
+    에러 신호가 아니라 세무사 아이템 발굴 신호.
+    탐지될수록 전문가 상담 가치가 높아지는 영역.
+    """
+    category: str                         # "예규공백" | "판례의존" | "조세불복가능" | "해석다툼"
+    description: str                      # 상황 설명 (상담 화면 노출용)
+    opportunity: str                      # 세무사 활용 포인트
+    related_article: Optional[str] = None # 관련 조문
+    signal_confidence: float = 0.5        # 이 신호 자체의 신뢰도
+
+
+@dataclass
 class TaxAnswer:
     answer: str                          # LLM 생성 답변
     verdict: str                         # TaxVerdict 값 또는 레거시 문자열
@@ -37,6 +51,7 @@ class TaxAnswer:
     chunk_ids: List[str] = field(default_factory=list)  # 검색된 청크 ID 전체
     missing_facts: List[str] = field(default_factory=list)  # 추가 확인 필요 항목
     warnings: List[str] = field(default_factory=list)
+    expert_review_signals: List[ExpertReviewSignal] = field(default_factory=list)
 
     def with_update(self, **kwargs) -> "TaxAnswer":
         """불변 업데이트 헬퍼"""

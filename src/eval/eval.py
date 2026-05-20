@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 from src.eval.feedback import compute_citation_precision, compute_retrieval_metrics
+from src.eval.retrieval_analyzer import run_analysis
+from src.domain.query_enrichment import enrich_raw_query_text, detect_flags_from_text
 from src.rag import answer_with_citations, retrieve_tax_law
 
 GOLDEN_PATH = Path("data/golden/qa_pairs.json")
@@ -45,9 +47,12 @@ def run_eval(
         as_of_date = case.get("as_of_date")
         expected_verdict = case.get("expected_verdict")  # "exempt" | "taxable" | "uncertain"
 
+        enriched_question = enrich_raw_query_text(question)
+        detected_flags = case.get("danger_flags") or detect_flags_from_text(question)
+
         t0 = time.time()
-        chunks = retrieve_tax_law(question, top_k=top_k, rerank_top_n=rerank_top_n, as_of_date=as_of_date)
-        answer = answer_with_citations(question, as_of_date=as_of_date)
+        chunks = retrieve_tax_law(enriched_question, top_k=top_k, rerank_top_n=rerank_top_n, as_of_date=as_of_date)
+        answer = answer_with_citations(enriched_question, as_of_date=as_of_date)
         latency_ms = int((time.time() - t0) * 1000)
 
         retrieved_ids = [c.id for c in chunks]
@@ -79,6 +84,8 @@ def run_eval(
             "confidence": answer.confidence,
             "missing_facts_count": len(answer.missing_facts),
             "latency_ms": latency_ms,
+            "retrieved_chunk_ids": retrieved_ids,
+            "detected_flags": detected_flags,
         }
         results.append(case_result)
         retrieval_metrics_all.append(ret_metrics)
@@ -121,6 +128,9 @@ def run_eval(
             encoding="utf-8",
         )
         print(f"\n결과 저장: {out_path}")
+
+    # ── RLVR 분석: flag별 recall + 키워드 업데이트 제안 ──────────────────────
+    run_analysis(cases, results, save_report=save_results)
 
     return summary
 

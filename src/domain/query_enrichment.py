@@ -11,6 +11,9 @@ danger_flags → 도메인 키워드 주입.
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Dict, List
 
 from .query_input import RAGQueryInput
@@ -41,7 +44,62 @@ DANGER_KEYWORD_MAP: Dict[str, str] = {
     "동거봉양합가": "동거봉양 합가 10년 이내 비과세 소득세법 시행령 제155조 제4항",
     "수용_compulsory_거주요건면제": "강제수용 거주요건 면제 소득세법 시행령 제154조 제1항 단서",
     "수용_negotiated_거주요건면제": "협의취득 거주요건 면제 소득세법 시행령 제154조 제1항 단서",
+    "특수관계자거래": "특수관계자 저가양도 고가매입 부당행위계산부인 소득세법 제101조 시가",
 }
+
+
+def _load_keyword_patch() -> None:
+    """auto_apply_map_updates()가 저장한 패치를 DANGER_KEYWORD_MAP에 적용한다."""
+    patch_path = Path("data/eval_results/keyword_map_patch.json")
+    if patch_path.exists():
+        try:
+            patch = json.loads(patch_path.read_text(encoding="utf-8"))
+            DANGER_KEYWORD_MAP.update(patch)
+        except Exception:
+            pass
+
+
+_load_keyword_patch()
+
+
+# raw 텍스트에서 danger_flag를 자동 탐지하는 패턴 목록.
+# eval.py / mcp_server.py 등 L2 팩트체크 없이 텍스트만 있는 경우에 사용.
+RAW_TRIGGER_PATTERNS: List[tuple] = [
+    (re.compile(r"배우자|직계존비속|증여"), "이월과세"),
+    (re.compile(r"이월과세"), "이월과세"),
+    (re.compile(r"상속"), "상속주택"),
+    (re.compile(r"일시적.{0,4}2주택|종전주택"), "일시적2주택"),
+    (re.compile(r"고가주택|12억"), "고가주택"),
+    (re.compile(r"상생임대"), "상생임대"),
+    (re.compile(r"분양권"), "분양권"),
+    (re.compile(r"조합원입주권|입주권"), "조합원입주권"),
+    (re.compile(r"비거주자|해외이주"), "비거주자"),
+    (re.compile(r"동거봉양|합가"), "동거봉양합가"),
+    (re.compile(r"수용|강제취득|협의취득"), "수용_compulsory_거주요건면제"),
+    (re.compile(r"재건축|재개발"), "재건축재개발원조합원"),
+    (re.compile(r"공동명의|지분"), "공동명의"),
+    (re.compile(r"특수관계자|부당행위계산"), "특수관계자거래"),
+]
+
+
+def detect_flags_from_text(query: str) -> List[str]:
+    """raw 텍스트에서 danger_flags를 자동 탐지한다."""
+    seen: set[str] = set()
+    flags: List[str] = []
+    for pattern, flag in RAW_TRIGGER_PATTERNS:
+        if pattern.search(query) and flag not in seen:
+            flags.append(flag)
+            seen.add(flag)
+    return flags
+
+
+def enrich_raw_query_text(query: str) -> str:
+    """
+    raw 텍스트 패턴 매칭으로 도메인 키워드를 주입한다.
+    L2 팩트체크 없이 텍스트만 있을 때(MCP, eval) 사용.
+    """
+    flags = detect_flags_from_text(query)
+    return enrich_query(query, flags)
 
 
 def enrich_query(base_query: str, danger_flags: List[str]) -> str:

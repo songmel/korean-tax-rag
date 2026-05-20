@@ -616,6 +616,13 @@ class FactVector:
     overseas_residence_yn: bool = False
     rental_business_yn: bool = False
 
+    # 특수관계자간 거래 (소득세법 §101 부당행위계산부인)
+    # 배우자·직계존비속·지배법인 등에 저가 양도 시 시가로 재계산됨
+    # → 계산된 양도차익·비과세 범위가 완전히 달라질 수 있음
+    # JSON 입력에서 항상 받아야 하는 필드 — None은 "미확인" 상태
+    is_related_party_transaction: Optional[bool] = None
+    related_party_type: Optional[str] = None  # "배우자" | "직계존비속" | "법인" | "주주" | "기타"
+
     @property
     def is_high_value_house(self) -> bool:
         """고가주택 여부 (양도가액 12억 초과) — 비과세 전액 불가, 초과분 과세"""
@@ -702,6 +709,14 @@ class FactVector:
             lines.append(
                 f"수용공익사업: {exp.acquisition_type} 보상유형{exp.compensation_type} "
                 + ("거주요건면제 소득세법시행령제154조제1항단서" if exp.residence_exemption_applies else "자진매각거주요건적용")
+            )
+
+        # 특수관계자간 거래 — §101 부당행위계산부인 조문 키워드 명시
+        if self.is_related_party_transaction:
+            party = self.related_party_type or "특수관계자"
+            lines.append(
+                f"특수관계자거래: {party} 소득세법제101조 부당행위계산부인 "
+                "시가기준양도가액재계산 저가양도"
             )
 
         # 공동명의
@@ -990,6 +1005,8 @@ def _build_fact_vector(op: dict, up: dict, sc: SpecialCaseFlags) -> FactVector:
         else float(up.get("residence_period_years", 0))
     )
 
+    _rpt_raw = up["is_related_party_transaction"] if "is_related_party_transaction" in up else fl.get("is_related_party_transaction")
+
     return FactVector(
         property_type=_resolve_property_type(up),
         asset_kind=up.get("asset_kind", ""),
@@ -1006,6 +1023,8 @@ def _build_fact_vector(op: dict, up: dict, sc: SpecialCaseFlags) -> FactVector:
         joint_ownership_yn=bool(up.get("joint_ownership_yn")),
         overseas_residence_yn=bool(op.get("overseas_residence_yn")),
         rental_business_yn=bool(up.get("rental_business_yn")),
+        is_related_party_transaction=bool(_rpt_raw) if _rpt_raw is not None else None,
+        related_party_type=up.get("related_party_type") or fl.get("related_party_type"),
     )
 
 

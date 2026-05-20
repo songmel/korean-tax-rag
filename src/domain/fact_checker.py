@@ -207,6 +207,20 @@ def check_facts(query: RAGQueryInput) -> FactCheckResult:
         # joint_owner_info는 FactVector에 없고 user_property에서 오므로
         # 여기서는 danger flag만 추가
 
+    # ── 10. 특수관계자간 거래 — 부당행위계산부인 위험 ─────────────────────
+    # 차단하지 않음(비크리티컬) — 경고 후 진행. L5에서 expert_review_signal 생성.
+    if fv.is_related_party_transaction:
+        danger.append("특수관계자거래")
+        missing.append(MissingFact(
+            field_name="related_party_transaction_details",
+            reason=(
+                "특수관계자 거래 확인 — 소득세법 §101 부당행위계산부인 적용 시 "
+                "양도가액이 시가로 재계산되어 양도차익·비과세 범위가 달라질 수 있음"
+            ),
+            article_hint="소득세법 §101",
+            is_critical=False,
+        ))
+
     # ── 결정 ─────────────────────────────────────────────────────────────
     critical_count = sum(1 for m in missing if m.is_critical)
     can_proceed = critical_count == 0

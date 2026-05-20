@@ -4,11 +4,11 @@ FastMCP 기반: stdio(Claude Desktop) + SSE(HTTP 클라이언트) 양쪽 지원
 """
 import os
 import json
-
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from src.rag import TaxAnswer, answer_with_citations, retrieve_tax_law
+from src.domain.query_enrichment import enrich_raw_query_text
 
 load_dotenv()
 
@@ -39,8 +39,9 @@ def search_tax_law(
         rerank_top_n: BGE reranking 후 반환할 조문 수 (기본 5)
         as_of_date: 기준일자 YYYYMMDD (예: "20220101"). 비워두면 전체 버전 검색.
     """
+    enriched_query = enrich_raw_query_text(query)
     chunks = retrieve_tax_law(
-        query, top_k=top_k, rerank_top_n=rerank_top_n,
+        enriched_query, top_k=top_k, rerank_top_n=rerank_top_n,
         as_of_date=as_of_date or None,
     )
     if not chunks:

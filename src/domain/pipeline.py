@@ -89,7 +89,7 @@ async def run_rag_pipeline(
     raw_answer = raw_answer.with_update(missing_facts=combined_missing)
 
     # ── L5: Output Validation ────────────────────────────────────────────
-    validated = validate_output(raw_answer, retrieved_ids)
+    validated = validate_output(raw_answer, retrieved_ids, danger_flags=fact_check.danger_flags)
 
     result = PipelineResult(
         answer=validated,

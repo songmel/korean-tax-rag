@@ -12,9 +12,9 @@ LLM 출력이 나온 후 실행. 두 종류의 오류를 방어:
 
 from __future__ import annotations
 
-from typing import Set
+from typing import List, Optional, Set
 
-from .tax_answer import TaxAnswer
+from .tax_answer import ExpertReviewSignal, TaxAnswer
 
 # 신뢰도 상한 — missing_facts 있을 때
 CONFIDENCE_CAP_WITH_MISSING = 0.75
@@ -26,16 +26,69 @@ CONFIDENCE_CAP_PHANTOM_CITATION = 0.3
 CONFIDENCE_CAP_UNCHECKED_HIGH_VALUE = 0.6
 
 
-def validate_output(answer: TaxAnswer, retrieved_chunk_ids: Set[str]) -> TaxAnswer:
+# 예규/판례 의존도가 높은 danger_flag → 세무사 전문 검토 기회 신호
+# 에러가 아니라 아이템 발굴 신호 — 탐지될수록 전문가 상담 가치 증가
+EXPERT_REVIEW_TRIGGERS: dict[str, dict] = {
+    "이월과세": {
+        "category": "해석다툼",
+        "description": "이월과세(§97의2) vs 부당행위계산부인(§101) 선택 적용은 예규·판례에 따라 달라집니다.",
+        "opportunity": "배우자 증여 후 양도 시 두 규정의 교차 적용 — 세액 차이가 크므로 세무사 검토 아이템",
+        "related_article": "소득세법 제97조의2, 제101조",
+    },
+    "상속주택": {
+        "category": "해석다툼",
+        "description": "공동상속 지정보유자 요건, 동거봉양 합산 판단 등은 예규·판례 의존 영역입니다.",
+        "opportunity": "최대지분·거주자·최연장자 기준 지정 분쟁, 피상속인 보유기간 합산 범위 — 세무사 검토 아이템",
+        "related_article": "소득세법 시행령 제155조 제2항",
+    },
+    "상생임대": {
+        "category": "예규공백",
+        "description": "상생임대 직전 임대차계약 범위, 보증금-월세 전환 시 5% 계산 방식이 예규로 구체화됩니다.",
+        "opportunity": "신규 임차인 vs 갱신 계약 경계 분쟁 — 5% 증액 요건 충족 여부 설계 아이템",
+        "related_article": "소득세법 시행령 제155조의3",
+    },
+    "공동명의": {
+        "category": "해석다툼",
+        "description": "공동명의 지분별 주택 수 산정 방식, 1주택 취급 기준은 예규 의존 영역입니다.",
+        "opportunity": "지분율 기준 vs 1주택 취급 — 공동명의 절세 구조 설계 아이템",
+        "related_article": "소득세법 시행령 제154조",
+    },
+    "재건축재개발원조합원": {
+        "category": "예규공백",
+        "description": "청산금 납부·수령 시 비례 과세 계산, 원조합원 보유기간 통산 방식은 예규로 구체화됩니다.",
+        "opportunity": "청산금 수령분 비례 과세 분기, 멸실 후 신축 입주권 보유기간 기산 — 세무사 검토 아이템",
+        "related_article": "소득세법 시행령 제156조의2",
+    },
+    "특수관계자거래": {
+        "category": "조세불복가능",
+        "description": "특수관계자 저가양도 시 부당행위계산부인 적용 여부는 시가 입증 방법에 따라 다투어질 수 있습니다.",
+        "opportunity": "시가 vs 양도가액 입증 전략, 조세심판 선례 활용 — 세무사 절세·불복 아이템",
+        "related_article": "소득세법 제101조",
+    },
+    "동거봉양합가": {
+        "category": "해석다툼",
+        "description": "동거봉양 합가 요건(60세·중증질환) 충족 여부 및 10년 기산점이 예규 쟁점입니다.",
+        "opportunity": "합가일 기준 입증, 별거 후 재합가 처리 — 세무사 요건 충족 검토 아이템",
+        "related_article": "소득세법 시행령 제155조 제4항",
+    },
+}
+
+
+def validate_output(
+    answer: TaxAnswer,
+    retrieved_chunk_ids: Set[str],
+    danger_flags: Optional[List[str]] = None,
+) -> TaxAnswer:
     """
     TaxAnswer를 검증하고 필요 시 confidence를 하향 조정.
 
     Args:
         answer: LLM이 생성한 TaxAnswer
         retrieved_chunk_ids: Stage 1+2 검색에서 실제로 반환된 chunk ID 집합
+        danger_flags: L2 fact_checker에서 탐지된 위험 플래그 목록 (예규 신호 탐지용)
 
     Returns:
-        warnings 추가 및 confidence 조정된 TaxAnswer
+        warnings, expert_review_signals 추가 및 confidence 조정된 TaxAnswer
     """
     warnings = list(answer.warnings)
     confidence = answer.confidence
@@ -85,7 +138,37 @@ def validate_output(answer: TaxAnswer, retrieved_chunk_ids: Set[str]) -> TaxAnsw
         )
         confidence = min(confidence, 0.5)
 
-    # ── 5. 최종 반환 ─────────────────────────────────────────────────────
-    if confidence != answer.confidence or warnings != answer.warnings:
-        return answer.with_update(confidence=confidence, warnings=warnings)
+    # ── 5. 예규/판례 의존 영역 → 세무사 전문 검토 기회 신호 ─────────────
+    # 에러 신호가 아니라 아이템 발굴 신호 — confidence 조정 없음
+    expert_signals: List[ExpertReviewSignal] = list(answer.expert_review_signals)
+    active_flags = set(danger_flags or [])
+    already_categories = {s.category + s.related_article for s in expert_signals}
+
+    for flag in active_flags:
+        trigger = EXPERT_REVIEW_TRIGGERS.get(flag)
+        if not trigger:
+            continue
+        key = trigger["category"] + (trigger.get("related_article") or "")
+        if key in already_categories:
+            continue
+        expert_signals.append(ExpertReviewSignal(
+            category=trigger["category"],
+            description=trigger["description"],
+            opportunity=trigger["opportunity"],
+            related_article=trigger.get("related_article"),
+        ))
+        already_categories.add(key)
+
+    # ── 6. 최종 반환 ─────────────────────────────────────────────────────
+    changed = (
+        confidence != answer.confidence
+        or warnings != answer.warnings
+        or expert_signals != answer.expert_review_signals
+    )
+    if changed:
+        return answer.with_update(
+            confidence=confidence,
+            warnings=warnings,
+            expert_review_signals=expert_signals,
+        )
     return answer
