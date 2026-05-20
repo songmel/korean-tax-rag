@@ -782,7 +782,7 @@ class RAGQueryInput:
         """
         date_bundle = _build_date_bundle(user_property)
         special_cases = _build_special_cases(fact_ledger, user_property)
-        fact_vector = _build_fact_vector(owner_profile, user_property, special_cases)
+        fact_vector = _build_fact_vector(owner_profile, user_property, special_cases, fact_ledger)
 
         return cls(
             date_bundle=date_bundle,
@@ -989,7 +989,8 @@ def _build_special_cases(fl: dict, up: dict) -> SpecialCaseFlags:
     return sc
 
 
-def _build_fact_vector(op: dict, up: dict, sc: SpecialCaseFlags) -> FactVector:
+def _build_fact_vector(op: dict, up: dict, sc: SpecialCaseFlags, fl: dict | None = None) -> FactVector:
+    fl = fl or {}
     # 거주 기간 — residence_periods 우선, 없으면 단일 값 fallback
     residence_periods: List[ResidencePeriod] = []
     if raw_periods := up.get("residence_periods"):
