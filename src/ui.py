@@ -110,35 +110,11 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    enable_debate = st.toggle(
-        "🔴 Red Team 검증",
-        value=False,
-        help="confidence < 0.8 또는 복합 특례 케이스에 자동으로 Red-Blue 논쟁을 실행합니다. 응답 시간이 늘어납니다.",
-    )
+    enable_debate = True
 
     with st.expander("RAG 파라미터"):
         top_k = st.slider("top_k", 5, 50, 20)
         rerank_top_n = st.slider("rerank_top_n", 1, 10, 5)
-
-    with st.expander("논쟁 통계"):
-        if st.button("통계 새로고침"):
-            from src.eval.debate import debate_summary
-            from src.eval.golden_injector import golden_summary
-            ds = debate_summary()
-            gs = golden_summary()
-            st.json({**ds, "golden": gs})
-
-    with st.expander("RAG 검색 디버그"):
-        debug_query = st.text_input("검색 쿼리")
-        if st.button("검색") and debug_query:
-            from src.rag import retrieve_tax_law
-            with st.spinner("검색 중..."):
-                chunks = retrieve_tax_law(debug_query, top_k=top_k, rerank_top_n=rerank_top_n)
-            st.write(f"{len(chunks)}개 조문")
-            for i, c in enumerate(chunks, 1):
-                with st.expander(f"[{i}] {c.law_name} 제{c.article_number}조 {c.score:.3f}"):
-                    st.text(c.full_text)
-                    st.caption(f"chunk_id: {c.id}")
 
 
 
