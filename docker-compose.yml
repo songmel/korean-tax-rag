@@ -1,0 +1,43 @@
+x-app-common: &app-common
+  build:
+    context: .
+  image: korean-tax-rag:dev
+  working_dir: /app
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    PYTHONPATH: /app
+    HF_HOME: /root/.cache/huggingface
+    TRANSFORMERS_CACHE: /root/.cache/huggingface
+    TORCH_HOME: /root/.cache/torch
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+  volumes:
+    - .:/app
+    - huggingface-cache:/root/.cache/huggingface
+    - torch-cache:/root/.cache/torch
+    - streamlit-cache:/root/.streamlit
+
+services:
+  api:
+    <<: *app-common
+    command: uvicorn src.api.chat_api:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+
+  ui:
+    <<: *app-common
+    command: streamlit run src/ui.py --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
+
+  mcp:
+    <<: *app-common
+    command: python -m src.api.mcp_server --sse
+    ports:
+      - "8001:8001"
+
+volumes:
+  huggingface-cache:
+  torch-cache:
+  streamlit-cache:

@@ -1,0 +1,3 @@
+# Keep the development image CPU-friendly.
+# Without this pin, the latest Linux arm64 torch wheel may pull CUDA packages.
+torch==2.6.0

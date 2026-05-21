@@ -109,6 +109,24 @@ streamlit run src/ui.py --server.port 8501
 
 브라우저에서 `http://localhost:8501` 접속
 
+### Docker 개발 환경
+
+협업 개발에서는 로컬 Python 대신 Docker Compose로 동일한 실행 환경을 사용할 수 있습니다.
+
+```bash
+cp .env.example .env
+docker compose build
+docker compose up api
+docker compose up ui
+docker compose up mcp
+```
+
+- FastAPI: `http://localhost:8000`
+- Streamlit UI: `http://localhost:8501`
+- MCP SSE: `http://localhost:8001`
+
+자세한 명령은 [docs/docker.md](docs/docker.md)를 참고하세요.
+
 ---
 
 ## 프로젝트 구조
